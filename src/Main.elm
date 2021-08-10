@@ -65,8 +65,7 @@ init _ url key =
 type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
-    | GotUserListResponse (GraphqlRemoteData UserListResponse)
-    | GotUserDetailResponse (GraphqlRemoteData UserDetailResponse)
+    | GotResponse PossibleData
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -85,13 +84,8 @@ update msg model =
             , parseUrlAndRequest url
             )
 
-        GotUserDetailResponse graphqlRemoteData ->
-            ( { model | data = UserData graphqlRemoteData }
-            , Cmd.none
-            )
-
-        GotUserListResponse graphqlRemoteData ->
-            ( { model | data = UserList graphqlRemoteData }
+        GotResponse graphqlRemoteData ->
+            ( { model | data = graphqlRemoteData }
             , Cmd.none
             )
 
@@ -210,10 +204,10 @@ parseUrlAndRequest url =
         Just route ->
             case route of
                 User string ->
-                   Id string |> userDetailQuery |> makeRequest GotUserDetailResponse
+                   Id string |> userDetailQuery |> makeRequest (UserData >> GotResponse)
 
                 Users ->
-                    userListQuery |> makeRequest GotUserListResponse
+                    userListQuery |> makeRequest (UserList >> GotResponse)
 
 
         Nothing -> Cmd.none
