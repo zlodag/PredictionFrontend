@@ -6,7 +6,7 @@ import Graphql.Http exposing (HttpError(..))
 import Graphql.Operation exposing (RootQuery)
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, toTime, viewData)
-import Html exposing (Html, a, b, dd, dl, dt, li, text, ul)
+import Html exposing (Html, a, b, dd, div, dl, dt, li, text, ul)
 import Html.Attributes exposing (href)
 import Predictions.Object.User as User
 import Predictions.Query as Query
@@ -42,7 +42,8 @@ type alias Document msg =
 -- MODEL
 
 type PossibleData
-    = UserData (GraphqlRemoteData UserDetailResponse)
+    = UserList (GraphqlRemoteData UserListResponse)
+    | UserData (GraphqlRemoteData UserDetailResponse)
     | NoData
 
 type alias Model =
@@ -64,6 +65,7 @@ init _ url key =
 type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
+    | GotUserListResponse (GraphqlRemoteData UserListResponse)
     | GotUserDetailResponse (GraphqlRemoteData UserDetailResponse)
 
 
@@ -83,8 +85,13 @@ update msg model =
             , parseUrlAndRequest url
             )
 
-        GotUserDetailResponse response ->
-            ( { model | data = UserData response }
+        GotUserDetailResponse graphqlRemoteData ->
+            ( { model | data = UserData graphqlRemoteData }
+            , Cmd.none
+            )
+
+        GotUserListResponse graphqlRemoteData ->
+            ( { model | data = UserList graphqlRemoteData }
             , Cmd.none
             )
 
@@ -108,11 +115,9 @@ view model =
         [ text "The current URL is: "
         , b [] [ text (Url.toString model.url) ]
         , ul []
-            [ viewLink "/home"
-            , viewLink "/profile"
-            , viewLink "/user/53fd525c-c6bf-45a9-b92c-826aeff3baa8"
-            , viewLink "/reviews/public-opinion"
-            , viewLink "/reviews/shah-of-shahs"
+            [ viewLink "/src/Main.elm"
+            , viewLink "/users"
+            , viewLink "/groups"
             ]
         , displayData model.data
         ]
@@ -122,7 +127,11 @@ displayData: PossibleData -> Html msg
 displayData possibleData =
     case possibleData of
         UserData data ->
-            viewData displayUser data
+            viewData (displayMaybe displayUser) data
+
+        UserList data ->
+            viewData displayUserList data
+
         NoData ->
             text "No data!"
 
@@ -130,19 +139,33 @@ viewLink : String -> Html msg
 viewLink path =
     li [] [ a [ href path ] [ text path ] ]
 
+displayUserList : List UserDetailData -> Html msg
+displayUserList list =
+    let
+        makeItem: UserDetailData -> Html msg
+        makeItem detail =
+            li [] [displayUser detail]
+    in
+
+        ul [] <| List.map makeItem list
+
+displayMaybe : (a -> Html msg) -> Maybe a -> Html msg
+displayMaybe displayFunction data =
+    case data of
+        Just a ->
+            displayFunction a
+        Nothing ->
+            div [] [text "Not found"]
 
 displayUser : UserDetailData -> Html msg
 displayUser user =
     dl []
-        [ dt [] [ text "user.id" ]
-        , dd []
-            [ case user.id of
+        [ dt [] [ text "Name" ]
+        , dd [] [ case user.id of
                 Id id ->
-                    text id
+                    a [href <| "/user/" ++ id] [text user.name]
             ]
-        , dt [] [ text "user.name" ]
-        , dd [] [ text user.name ]
-        , dt [] [ text "user.created" ]
+        , dt [] [ text "Created" ]
         , dd [] [ text <| toTime user.created ]
         ]
 
@@ -150,17 +173,17 @@ displayUser user =
 
 
 type Route
-  = User String
+  = Users
   --| Blog Int
-  --| User String
+  | User String
   --| Comment String Int
 
 routeParser : Parser (Route -> a) a
 routeParser =
   oneOf
-    [ map User    (s "user" </> string)
+    [ map Users <| s "users"
     --, map Blog    (s "blog" </> int)
-    --, map User    (s "user" </> string)
+    , map User <| s "user" </> string
     --, map Comment (s "user" </> string </> s "comment" </> int)
     ]
 
@@ -188,12 +211,24 @@ parseUrlAndRequest url =
             case route of
                 User string ->
                    Id string |> userDetailQuery |> makeRequest GotUserDetailResponse
+
+                Users ->
+                    userListQuery |> makeRequest GotUserListResponse
+
+
         Nothing -> Cmd.none
 
 
 -- Fetch
 
 
+-- User
+
+mapToUserDetailData =
+    SelectionSet.map3 UserDetailData
+                User.name
+                User.id
+                User.created
 
 type alias UserDetailData =
     { name : String
@@ -206,11 +241,14 @@ type alias UserDetailResponse =
 
 userDetailQuery : Id -> SelectionSet UserDetailResponse RootQuery
 userDetailQuery id =
-    Query.user { id = id } <|
-        SelectionSet.map3 UserDetailData
-            User.name
-            User.id
-            User.created
+    Query.user { id = id } <| mapToUserDetailData
+
+type alias UserListResponse =
+    List UserDetailData
+
+userListQuery: SelectionSet UserListResponse RootQuery
+userListQuery =
+    Query.users <| mapToUserDetailData
 
 
 makeRequest : (GraphqlRemoteData decodesTo -> Msg) -> SelectionSet decodesTo RootQuery -> Cmd Msg

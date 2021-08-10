@@ -14,7 +14,7 @@ import String exposing (fromInt, toInt)
 import Time exposing (Posix)
 
 
-viewData : (a -> Html msg) -> GraphqlRemoteData (Maybe a) -> Html msg
+viewData : (a -> Html msg) -> GraphqlRemoteData a -> Html msg
 viewData displayData remoteData =
     case remoteData of
         RemoteData.Loading ->
@@ -27,13 +27,8 @@ viewData displayData remoteData =
             case e of
                 Graphql.Http.GraphqlError possiblyParsedData graphqlErrors ->
                     case possiblyParsedData of
-                        ParsedData d ->
-                            case d of
-                                Just data ->
-                                    div [] [ displayData data, text "Http.GraphqlError with ParsedData" |> viewWithGraphqlErrors graphqlErrors ]
-
-                                Nothing ->
-                                    text "Http.GraphqlError with empty ParsedData" |> viewWithGraphqlErrors graphqlErrors
+                        ParsedData data ->
+                            div [] [ displayData data, text "Http.GraphqlError with ParsedData" |> viewWithGraphqlErrors graphqlErrors ]
 
                         UnparsedData _ ->
                             text "Http.GraphqlError with UnparsedData" |> viewWithGraphqlErrors graphqlErrors
@@ -55,13 +50,8 @@ viewData displayData remoteData =
                         BadPayload error ->
                             div [] [ text "Graphql.Http.HttpError: BadPayload", pre [] [ text <| Decode.errorToString error ] ]
 
-        RemoteData.Success d ->
-            case d of
-                Just data ->
-                    displayData data
-
-                Nothing ->
-                    text "RemoteData.Success with empty ParsedData"
+        RemoteData.Success data ->
+            displayData data
 
 
 viewHeaders : Dict String String -> List (Html msg)
