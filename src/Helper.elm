@@ -1,4 +1,4 @@
-module Helper exposing (viewData, GraphqlRemoteData, toTime)
+module Helper exposing (GraphqlRemoteData, toTime, viewData)
 
 import Dict exposing (Dict)
 import Graphql.Http exposing (HttpError(..))
@@ -107,8 +107,10 @@ viewWithGraphqlErrors errors msg =
         , ul [] (errors |> map viewGraphqlError)
         ]
 
+
 type alias GraphqlRemoteData a =
-    RemoteData (Graphql.Http.Error a ) a
+    RemoteData (Graphql.Http.Error a) a
+
 
 toTime : Timestamp -> String
 toTime timestamp =

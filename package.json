@@ -2,6 +2,7 @@
   "name": "prediction-frontend",
   "version": "0.0.1",
   "scripts": {
+    "build": "elm make src/Main.elm",
     "api": "elm-graphql http://localhost:3000/graphql --base Predictions"
   },
   "devDependencies": {
