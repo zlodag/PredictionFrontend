@@ -116,8 +116,7 @@ view model =
         [ text "The current URL is: "
         , b [] [ text (Url.toString model.url) ]
         , ul []
-            [ viewLink "/"
-            , viewLink "/users"
+            [ viewLink "/users"
             , viewLink "/groups"
             ]
         , displayData model.data
@@ -128,16 +127,6 @@ view model =
 viewLink : String -> Html msg
 viewLink path =
     li [] [ a [ href path ] [ text path ] ]
-
-
-displayList : (a -> Html msg) -> List a -> Html msg
-displayList displayDetail list =
-    let
-        makeItem : a -> Html msg
-        makeItem item =
-            li [] [ displayDetail item ]
-    in
-    ul [] <| List.map makeItem list
 
 
 displayMaybe : (a -> Html msg) -> Maybe a -> Html msg
@@ -154,13 +143,13 @@ displayData : PossibleData -> Html msg
 displayData possibleData =
     case possibleData of
         UserList graphqlRemoteData ->
-            viewData (displayList displayUser) graphqlRemoteData
+            viewData (displayNamedNodeList "/user/") graphqlRemoteData
 
         UserData graphqlRemoteData ->
             viewData (displayMaybe displayUser) graphqlRemoteData
 
         GroupList graphqlRemoteData ->
-            viewData (displayList displayGroup) graphqlRemoteData
+            viewData (displayNamedNodeList "/group/") graphqlRemoteData
 
         GroupData graphqlRemoteData ->
             viewData (displayMaybe displayGroup) graphqlRemoteData
@@ -169,17 +158,31 @@ displayData possibleData =
             text "No data!"
 
 
+displayNamedNodeListItem : String -> NamedNodeData -> Html msg
+displayNamedNodeListItem base_path node =
+    case node.id of
+        Id id ->
+            li [] [ a [ href <| base_path ++ id ] [ text node.name ] ]
+
+
+displayNamedNodeList : String -> List NamedNodeData -> Html msg
+displayNamedNodeList base_path nodes =
+    ul [] <| List.map (displayNamedNodeListItem base_path) nodes
+
+
 displayUser : UserDetailData -> Html msg
 displayUser user =
     dl []
         [ dt [] [ text "Name" ]
         , dd []
-            [ case user.id of
+            [ case user.node.id of
                 Id id ->
-                    a [ href <| "/user/" ++ id ] [ text user.name ]
+                    a [ href <| "/user/" ++ id ] [ text user.node.name ]
             ]
         , dt [] [ text "Created" ]
         , dd [] [ text <| toTime user.created ]
+        , dt [] [ text "Groups" ]
+        , dd [] [ displayNamedNodeList "/group/" user.groups ]
         ]
 
 
@@ -188,10 +191,12 @@ displayGroup group =
     dl []
         [ dt [] [ text "Name" ]
         , dd []
-            [ case group.id of
+            [ case group.node.id of
                 Id id ->
-                    a [ href <| "/group/" ++ id ] [ text group.name ]
+                    a [ href <| "/group/" ++ id ] [ text group.node.name ]
             ]
+        , dt [] [ text "Members" ]
+        , dd [] [ displayNamedNodeList "/user/" group.members ]
         ]
 
 
@@ -207,10 +212,6 @@ type Route
     | Group String
 
 
-
---| Comment String Int
-
-
 routeParser : Parser (Route -> a) a
 routeParser =
     oneOf
@@ -218,24 +219,7 @@ routeParser =
         , map User <| s "user" </> string
         , map Groups <| s "groups"
         , map Group <| s "group" </> string
-
-        --, map Comment (s "user" </> string </> s "comment" </> int)
         ]
-
-
-
--- /topic/pottery        ==>  Just (Topic "pottery")
--- /topic/collage        ==>  Just (Topic "collage")
--- /topic/               ==>  Nothing
--- /blog/42              ==>  Just (Blog 42)
--- /blog/123             ==>  Just (Blog 123)
--- /blog/mosaic          ==>  Nothing
--- /user/tom/            ==>  Just (User "tom")
--- /user/sue/            ==>  Just (User "sue")
--- /user/bob/comment/42  ==>  Just (Comment "bob" 42)
--- /user/sam/comment/35  ==>  Just (Comment "sam" 35)
--- /user/sam/comment/    ==>  Nothing
--- /user/                ==>  Nothing
 
 
 parseUrlAndRequest : Url.Url -> Cmd Msg
@@ -261,21 +245,26 @@ parseUrlAndRequest url =
 
 
 -- Fetch
--- User
+
+
+type alias NamedNodeData =
+    { id : Id
+    , name : String
+    }
 
 
 type alias UserDetailData =
-    { name : String
-    , id : Id
+    { node : NamedNodeData
     , created : Timestamp
+    , groups : List NamedNodeData
     }
 
 
 mapToUserDetailData =
     SelectionSet.map3 UserDetailData
-        User.name
-        User.id
+        (SelectionSet.map2 NamedNodeData User.id User.name)
         User.created
+        (User.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name)
 
 
 type alias UserDetailResponse =
@@ -288,28 +277,24 @@ userDetailQuery id =
 
 
 type alias UserListResponse =
-    List UserDetailData
+    List NamedNodeData
 
 
 userListQuery : SelectionSet UserListResponse RootQuery
 userListQuery =
-    Query.users <| mapToUserDetailData
-
-
-
--- Group
+    Query.users <| SelectionSet.map2 NamedNodeData User.id User.name
 
 
 type alias GroupDetailData =
-    { name : String
-    , id : Id
+    { node : NamedNodeData
+    , members : List NamedNodeData
     }
 
 
 mapToGroupDetailData =
     SelectionSet.map2 GroupDetailData
-        Group.name
-        Group.id
+        (SelectionSet.map2 NamedNodeData Group.id Group.name)
+        (Group.members <| SelectionSet.map2 NamedNodeData User.id User.name)
 
 
 type alias GroupDetailResponse =
@@ -322,16 +307,12 @@ groupDetailQuery id =
 
 
 type alias GroupListResponse =
-    List GroupDetailData
+    List NamedNodeData
 
 
 groupListQuery : SelectionSet GroupListResponse RootQuery
 groupListQuery =
-    Query.groups <| mapToGroupDetailData
-
-
-
--- Fetch common
+    Query.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name
 
 
 makeRequest : (GraphqlRemoteData decodesTo -> Msg) -> SelectionSet decodesTo RootQuery -> Cmd Msg
