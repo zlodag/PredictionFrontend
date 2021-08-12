@@ -8,6 +8,7 @@ import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, toTime, viewData)
 import Html exposing (Html, a, b, dd, div, dl, dt, li, text, ul)
 import Html.Attributes exposing (href)
+import Predictions.Object.Case as Case
 import Predictions.Object.Group as Group
 import Predictions.Object.User as User
 import Predictions.Query as Query
@@ -186,8 +187,10 @@ displayUser user =
             ]
         , dt [] [ text "Created" ]
         , dd [] [ text <| toTime user.created ]
-        , dt [] [ text "Groups" ]
+        , dt [] [ text <| "Groups (" ++ String.fromInt (List.length user.groups) ++ ")" ]
         , dd [] [ displayNamedNodeList "/group/" user.groups ]
+        , dt [] [ text <| "Cases (" ++ String.fromInt (List.length user.cases) ++ ")" ]
+        , dd [] [ displayNamedNodeList "/case/" user.cases ]
         ]
 
 
@@ -200,7 +203,7 @@ displayGroup group =
                 Id id ->
                     a [ href <| "/group/" ++ id ] [ text group.node.name ]
             ]
-        , dt [] [ text "Members" ]
+        , dt [] [ text <| "Members (" ++ String.fromInt (List.length group.members) ++ ")" ]
         , dd [] [ displayNamedNodeList "/user/" group.members ]
         ]
 
@@ -262,14 +265,16 @@ type alias UserDetailData =
     { node : NamedNodeData
     , created : Timestamp
     , groups : List NamedNodeData
+    , cases : List CaseLimitedData
     }
 
 
 mapToUserDetailData =
-    SelectionSet.map3 UserDetailData
+    SelectionSet.map4 UserDetailData
         (SelectionSet.map2 NamedNodeData User.id User.name)
         User.created
         (User.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name)
+        (User.cases <| SelectionSet.map2 NamedNodeData Case.id Case.reference)
 
 
 type alias UserDetailResponse =
@@ -318,6 +323,14 @@ type alias GroupListResponse =
 groupListQuery : SelectionSet GroupListResponse RootQuery
 groupListQuery =
     Query.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name
+
+
+type alias CaseLimitedData =
+    NamedNodeData
+
+
+
+-- Helper for fetch
 
 
 makeRequest : (GraphqlRemoteData decodesTo -> Msg) -> SelectionSet decodesTo RootQuery -> Cmd Msg
