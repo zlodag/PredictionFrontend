@@ -6,12 +6,15 @@ import Graphql.Http exposing (HttpError(..))
 import Graphql.Operation exposing (RootQuery)
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, toTime, viewData)
-import Html exposing (Html, a, b, dd, div, dl, dt, li, text, ul)
+import Html exposing (Html, a, b, dd, div, dl, dt, h4, li, p, strong, text, ul)
 import Html.Attributes exposing (href)
+import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.Object.Case as Case
 import Predictions.Object.Diagnosis as Diagnosis
 import Predictions.Object.Group as Group
+import Predictions.Object.Judgement as Judgement
 import Predictions.Object.User as User
+import Predictions.Object.Wager as Wager
 import Predictions.Query as Query
 import Predictions.Scalar exposing (Id(..), Timestamp(..))
 import RemoteData exposing (RemoteData)
@@ -178,7 +181,12 @@ displayNamedNodeLink base_path node =
 
 displayNamedNodeList : String -> List NamedNodeData -> Html msg
 displayNamedNodeList base_path nodes =
-    ul [] <| List.map (li [] << List.singleton << displayNamedNodeLink base_path) nodes
+    displayInList (displayNamedNodeLink base_path >> List.singleton) nodes
+
+
+displayInList : (a -> List (Html msg)) -> List a -> Html msg
+displayInList displayFunction list =
+    ul [] <| List.map (li [] << displayFunction) list
 
 
 displayUser : UserDetailData -> Html msg
@@ -202,6 +210,8 @@ displayGroup group =
         , dd [] [ displayNamedNodeLink "/group" group.node ]
         , dt [] [ text <| "Members (" ++ String.fromInt (List.length group.members) ++ ")" ]
         , dd [] [ displayNamedNodeList "/user" group.members ]
+        , dt [] [ text <| "Cases (" ++ String.fromInt (List.length group.cases) ++ ")" ]
+        , dd [] [ displayNamedNodeList "/case" group.cases ]
         ]
 
 
@@ -210,10 +220,10 @@ displayCase case_ =
     dl []
         [ dt [] [ text "Reference" ]
         , dd [] [ displayNamedNodeLink "/case" case_.node ]
+        , dt [] [ text "Deadline" ]
+        , dd [] [ text <| toTime case_.deadline ]
         , dt [] [ text "Creator" ]
         , dd [] [ displayNamedNodeLink "/user" case_.creator ]
-        , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length case_.diagnoses) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/diagnosis" case_.diagnoses ]
         , dt [] [ text "Group" ]
         , dd []
             [ case case_.group of
@@ -223,9 +233,57 @@ displayCase case_ =
                 Nothing ->
                     text "None"
             ]
-        , dt [] [ text "Deadline" ]
-        , dd [] [ text <| toTime case_.deadline ]
+        , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length case_.diagnoses) ++ ")" ]
+        , dd [] [ displayInList displayDiagnosis case_.diagnoses ]
         ]
+
+
+displayDiagnosis : DiagnosisDetailData -> List (Html msg)
+displayDiagnosis diagnosis =
+    [ h4 [] [ text diagnosis.node.name ]
+    , displayInList displayWager diagnosis.wagers
+    , displayJudgement diagnosis.judgement
+    ]
+
+
+displayWager : WagerData -> List (Html msg)
+displayWager wager =
+    [ displayNamedNodeLink "/user" wager.creator
+    , text " estimated "
+    , b [] [ text <| String.fromInt wager.confidence ++ "%" ]
+    , text <| " at " ++ toTime wager.timestamp
+    ]
+
+
+displayJudgement : Maybe JudgementData -> Html msg
+displayJudgement judgement =
+    case judgement of
+        Just judged ->
+            p []
+                [ text " Judged as "
+                , strong [] [ displayOutcome judged.outcome ]
+                , text " by "
+                , displayNamedNodeLink "/user" judged.judgedBy
+                , text <| " at " ++ toTime judged.timestamp ++ ")"
+                ]
+
+        Nothing ->
+            text "Not yet judged!"
+
+
+displayOutcome : Outcome -> Html msg
+displayOutcome outcome =
+    text
+        (case outcome of
+            Right ->
+                "Right"
+
+            Wrong ->
+                "Wrong"
+
+            Indeterminate ->
+                "Indeterminate"
+        )
 
 
 
@@ -323,13 +381,15 @@ userListQuery =
 type alias GroupDetailData =
     { node : NamedNodeData
     , members : List NamedNodeData
+    , cases : List CaseLimitedData
     }
 
 
 mapToGroupDetailData =
-    SelectionSet.map2 GroupDetailData
+    SelectionSet.map3 GroupDetailData
         (SelectionSet.map2 NamedNodeData Group.id Group.name)
         (Group.members <| SelectionSet.map2 NamedNodeData User.id User.name)
+        (Group.cases <| SelectionSet.map2 NamedNodeData Case.id Case.reference)
 
 
 type alias GroupDetailResponse =
@@ -359,7 +419,7 @@ type alias CaseDetailData =
     , creator : NamedNodeData
     , group : Maybe NamedNodeData
     , deadline : Timestamp
-    , diagnoses : List NamedNodeData
+    , diagnoses : List DiagnosisDetailData
     }
 
 
@@ -369,7 +429,7 @@ mapToCaseDetailData =
         (Case.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
         (Case.group <| SelectionSet.map2 NamedNodeData Group.id Group.name)
         Case.deadline
-        (Case.diagnoses <| SelectionSet.map2 NamedNodeData Diagnosis.id Diagnosis.name)
+        (Case.diagnoses <| mapToDiagnosisDetailData)
 
 
 type alias CaseDetailResponse =
@@ -379,6 +439,52 @@ type alias CaseDetailResponse =
 caseDetailQuery : Id -> SelectionSet CaseDetailResponse RootQuery
 caseDetailQuery id =
     Query.case_ { id = id } <| mapToCaseDetailData
+
+
+type alias DiagnosisLimitedData =
+    NamedNodeData
+
+
+type alias DiagnosisDetailData =
+    { node : NamedNodeData
+    , wagers : List WagerData
+    , judgement : Maybe JudgementData
+    }
+
+
+type alias WagerData =
+    { creator : NamedNodeData
+    , confidence : Int
+    , timestamp : Timestamp
+    }
+
+
+type alias JudgementData =
+    { judgedBy : NamedNodeData
+    , timestamp : Timestamp
+    , outcome : Outcome
+    }
+
+
+mapToDiagnosisDetailData =
+    SelectionSet.map3 DiagnosisDetailData
+        (SelectionSet.map2 NamedNodeData Diagnosis.id Diagnosis.name)
+        (Diagnosis.wagers <| mapToWagerData)
+        (Diagnosis.judgement <| mapToJudgementData)
+
+
+mapToWagerData =
+    SelectionSet.map3 WagerData
+        (Wager.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
+        Wager.confidence
+        Wager.timestamp
+
+
+mapToJudgementData =
+    SelectionSet.map3 JudgementData
+        (Judgement.judgedBy <| SelectionSet.map2 NamedNodeData User.id User.name)
+        Judgement.timestamp
+        Judgement.outcome
 
 
 
