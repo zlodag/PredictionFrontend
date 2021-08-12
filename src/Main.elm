@@ -80,7 +80,11 @@ update msg model =
         LinkClicked urlRequest ->
             case urlRequest of
                 Browser.Internal url ->
-                    ( model, Nav.pushUrl model.key (Url.toString url) )
+                    if url.path == "/graphql" then
+                        ( model, Nav.load (Url.toString url) )
+
+                    else
+                        ( model, Nav.pushUrl model.key (Url.toString url) )
 
                 Browser.External href ->
                     ( model, Nav.load href )
@@ -116,7 +120,8 @@ view model =
         [ text "The current URL is: "
         , b [] [ text (Url.toString model.url) ]
         , ul []
-            [ viewLink "/users"
+            [ li [] [ a [ href "/graphql" ] [ text "GraphiQL" ] ]
+            , viewLink "/users"
             , viewLink "/groups"
             ]
         , displayData model.data
