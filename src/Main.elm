@@ -49,7 +49,7 @@ type alias Document msg =
 -- MODEL
 
 
-type PossibleData
+type State
     = UserList (GraphqlRemoteData UserListResponse)
     | UserData (GraphqlRemoteData UserDetailResponse)
     | GroupList (GraphqlRemoteData GroupListResponse)
@@ -60,14 +60,13 @@ type PossibleData
 
 type alias Model =
     { key : Nav.Key
-    , url : Url.Url
-    , data : PossibleData
+    , state : State
     }
 
 
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
 init _ url key =
-    ( Model key url NoData, parseUrlAndRequest url )
+    ( Model key NoData, parseUrlAndRequest url )
 
 
 
@@ -77,7 +76,7 @@ init _ url key =
 type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
-    | GotResponse PossibleData
+    | GotResponse State
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -96,12 +95,10 @@ update msg model =
                     ( model, Nav.load href )
 
         UrlChanged url ->
-            ( { model | url = url }
-            , parseUrlAndRequest url
-            )
+            ( model, parseUrlAndRequest url )
 
         GotResponse graphqlRemoteData ->
-            ( { model | data = graphqlRemoteData }
+            ( { model | state = graphqlRemoteData }
             , Cmd.none
             )
 
@@ -123,14 +120,12 @@ view : Model -> Browser.Document Msg
 view model =
     { title = "Predictions"
     , body =
-        [ text "The current URL is: "
-        , b [] [ text (Url.toString model.url) ]
-        , ul []
+        [ ul []
             [ li [] [ a [ href "/graphql" ] [ text "GraphiQL" ] ]
             , viewLink "/users"
             , viewLink "/groups"
             ]
-        , displayData model.data
+        , displayData model.state
         ]
     }
 
@@ -150,7 +145,7 @@ displayMaybe displayFunction data =
             div [] [ text "Not found" ]
 
 
-displayData : PossibleData -> Html msg
+displayData : State -> Html msg
 displayData possibleData =
     case possibleData of
         NoData ->
