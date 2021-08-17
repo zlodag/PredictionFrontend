@@ -6,8 +6,10 @@ import Graphql.Http exposing (HttpError(..))
 import Graphql.Operation exposing (RootQuery)
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, toTime, viewData)
-import Html exposing (Html, a, b, dd, div, dl, dt, h4, li, p, strong, text, ul)
-import Html.Attributes exposing (href)
+import Html exposing (Html, a, b, button, dd, div, dl, dt, h4, input, li, p, strong, text, ul)
+import Html.Attributes exposing (href, placeholder, type_, value)
+import Html.Events exposing (onClick, onInput)
+import Iso8601
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.Object.Case as Case
 import Predictions.Object.Diagnosis as Diagnosis
@@ -19,6 +21,7 @@ import Predictions.Query as Query
 import Predictions.Scalar exposing (Id(..), Timestamp(..))
 import RemoteData exposing (RemoteData)
 import String
+import Time
 import Url
 import Url.Parser exposing ((</>), Parser, map, oneOf, s, string)
 
@@ -49,12 +52,26 @@ type alias Document msg =
 -- MODEL
 
 
+type alias PredictionInput =
+    { diagnosis : String
+    , confidence : Int
+    }
+
+
+type alias CaseInput =
+    { reference : String
+    , predictions : List PredictionInput
+    , deadline : Time.Posix
+    }
+
+
 type State
     = UserList (GraphqlRemoteData UserListResponse)
     | UserData (GraphqlRemoteData UserDetailResponse)
     | GroupList (GraphqlRemoteData GroupListResponse)
     | GroupData (GraphqlRemoteData GroupDetailResponse)
     | CaseData (GraphqlRemoteData CaseDetailResponse)
+    | NewCase CaseInput
     | NoData
 
 
@@ -66,7 +83,7 @@ type alias Model =
 
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
 init _ url key =
-    ( Model key NoData, parseUrlAndRequest url )
+    parseUrlAndRequest (Model key NoData) url
 
 
 
@@ -77,6 +94,7 @@ type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
     | GotResponse State
+    | CaseChanged CaseInput
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -95,10 +113,15 @@ update msg model =
                     ( model, Nav.load href )
 
         UrlChanged url ->
-            ( model, parseUrlAndRequest url )
+            parseUrlAndRequest model url
 
         GotResponse graphqlRemoteData ->
             ( { model | state = graphqlRemoteData }
+            , Cmd.none
+            )
+
+        CaseChanged caseInput ->
+            ( { model | state = NewCase caseInput }
             , Cmd.none
             )
 
@@ -124,6 +147,7 @@ view model =
             [ li [] [ a [ href "/graphql" ] [ text "GraphiQL" ] ]
             , viewLink "/users"
             , viewLink "/groups"
+            , viewLink "/new"
             ]
         , displayData model.state
         ]
@@ -145,7 +169,7 @@ displayMaybe displayFunction data =
             div [] [ text "Not found" ]
 
 
-displayData : State -> Html msg
+displayData : State -> Html Msg
 displayData possibleData =
     case possibleData of
         NoData ->
@@ -165,6 +189,9 @@ displayData possibleData =
 
         CaseData graphqlRemoteData ->
             viewData (displayMaybe displayCase) graphqlRemoteData
+
+        NewCase input ->
+            displayNewForm input
 
 
 displayNamedNodeLink : String -> NamedNodeData -> Html msg
@@ -281,17 +308,77 @@ displayOutcome outcome =
         )
 
 
+caseReferenceChanged : CaseInput -> String -> Msg
+caseReferenceChanged caseInput reference =
+    CaseChanged { caseInput | reference = reference }
+
+
+caseDeadlineChanged : CaseInput -> String -> Msg
+caseDeadlineChanged caseInput deadline =
+    case Iso8601.toTime deadline of
+        Ok value ->
+            CaseChanged { caseInput | deadline = value }
+
+        _ ->
+            CaseChanged { caseInput | deadline = Time.millisToPosix 0 }
+
+
+addNewLine : CaseInput -> Msg
+addNewLine caseInput =
+    CaseChanged { caseInput | predictions = caseInput.predictions ++ [ PredictionInput "" 0 ] }
+
+
+predictionChanged : Int -> PredictionInput -> CaseInput -> Msg
+predictionChanged index newPrediction caseInput =
+    CaseChanged { caseInput | predictions = List.take index caseInput.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseInput.predictions }
+
+
+diagnosisChanged : Int -> PredictionInput -> CaseInput -> String -> Msg
+diagnosisChanged index oldPrediction caseInput diagnosis =
+    predictionChanged index { oldPrediction | diagnosis = diagnosis } caseInput
+
+
+confidenceChanged : Int -> PredictionInput -> CaseInput -> String -> Msg
+confidenceChanged index oldPrediction caseInput confidence =
+    predictionChanged index { oldPrediction | confidence = Maybe.withDefault 0 (String.toInt confidence) } caseInput
+
+
+displayPrediction : CaseInput -> Int -> PredictionInput -> Html Msg
+displayPrediction caseInput index prediction =
+    div [] [ input [ placeholder "Diagnosis", value prediction.diagnosis, onInput (diagnosisChanged index prediction caseInput) ] [], input [ type_ "number", Html.Attributes.min "0", Html.Attributes.max "100", value (String.fromInt prediction.confidence), onInput (confidenceChanged index prediction caseInput) ] [] ]
+
+
+printPrediction : PredictionInput -> Html Msg
+printPrediction prediction =
+    div []
+        [ text <| prediction.diagnosis ++ ": " ++ String.fromInt prediction.confidence ++ "% confidence"
+        ]
+
+
+displayNewForm : CaseInput -> Html Msg
+displayNewForm caseInput =
+    div [] <|
+        [ div [] [ input [ placeholder "Case reference", value caseInput.reference, onInput (caseReferenceChanged caseInput) ] [] ]
+        , div [] [ input [ type_ "datetime-local", placeholder "Deadline", value (Iso8601.fromTime caseInput.deadline |> String.dropRight 5), onInput (caseDeadlineChanged caseInput) ] [] ]
+        ]
+            ++ List.indexedMap (displayPrediction caseInput) caseInput.predictions
+            ++ [ div [] [ button [ onClick (addNewLine caseInput) ] [ text "+" ] ]
+               , div [] [ text <| caseInput.reference ++ " at " ++ (Iso8601.fromTime caseInput.deadline |> String.dropRight 5) ++ ": " ++ (String.fromInt <| List.length caseInput.predictions) ++ " prediction(s)" ]
+               ]
+            ++ List.map printPrediction caseInput.predictions
+
+
 
 -- Parse URL
 
 
 type Route
     = Users
-      --| Blog Int
     | User String
     | Groups
     | Group String
     | Case String
+    | New
 
 
 routeParser : Parser (Route -> a) a
@@ -302,31 +389,49 @@ routeParser =
         , map Groups <| s "groups"
         , map Group <| s "group" </> string
         , map Case <| s "case" </> string
+        , map New <| s "new"
         ]
 
 
-parseUrlAndRequest : Url.Url -> Cmd Msg
-parseUrlAndRequest url =
+parseUrlAndRequest : Model -> Url.Url -> ( Model, Cmd Msg )
+parseUrlAndRequest model url =
     case Url.Parser.parse routeParser url of
         Just route ->
             case route of
                 Users ->
-                    userListQuery |> makeRequest (UserList >> GotResponse)
+                    ( { model | state = UserList RemoteData.Loading }
+                    , userListQuery |> makeRequest (UserList >> GotResponse)
+                    )
 
                 User string ->
-                    Id string |> userDetailQuery |> makeRequest (UserData >> GotResponse)
+                    ( { model | state = UserData RemoteData.Loading }
+                    , Id string |> userDetailQuery |> makeRequest (UserData >> GotResponse)
+                    )
 
                 Groups ->
-                    groupListQuery |> makeRequest (GroupList >> GotResponse)
+                    ( { model | state = GroupList RemoteData.Loading }
+                    , groupListQuery |> makeRequest (GroupList >> GotResponse)
+                    )
 
                 Group string ->
-                    Id string |> groupDetailQuery |> makeRequest (GroupData >> GotResponse)
+                    ( { model | state = GroupData RemoteData.Loading }
+                    , Id string |> groupDetailQuery |> makeRequest (GroupData >> GotResponse)
+                    )
 
                 Case string ->
-                    Id string |> caseDetailQuery |> makeRequest (CaseData >> GotResponse)
+                    ( { model | state = GroupData RemoteData.Loading }
+                    , Id string |> caseDetailQuery |> makeRequest (CaseData >> GotResponse)
+                    )
+
+                New ->
+                    ( { model | state = NewCase (CaseInput "" [] (Time.millisToPosix 0)) }
+                    , Cmd.none
+                    )
 
         Nothing ->
-            Cmd.none
+            ( { model | state = NoData }
+            , Cmd.none
+            )
 
 
 
