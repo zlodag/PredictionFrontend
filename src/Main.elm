@@ -1,13 +1,13 @@
 module Main exposing (main)
 
-import Browser
+import Browser exposing (Document)
 import Browser.Navigation as Nav
 import Graphql.Http exposing (HttpError(..))
 import Graphql.Operation exposing (RootQuery)
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, toTime, viewData)
-import Html exposing (Html, a, b, button, dd, div, dl, dt, h4, input, li, p, strong, text, ul)
-import Html.Attributes exposing (href, placeholder, type_, value)
+import Html exposing (Html, a, b, button, dd, div, dl, dt, fieldset, h4, h5, h6, input, li, p, span, strong, text, ul)
+import Html.Attributes exposing (href, placeholder, style, type_, value)
 import Html.Events exposing (onClick, onInput)
 import Iso8601
 import Predictions.Enum.Outcome exposing (Outcome(..))
@@ -42,26 +42,31 @@ main =
         }
 
 
-type alias Document msg =
-    { title : String
-    , body : List (Html msg)
-    }
-
-
 
 -- MODEL
 
 
 type alias PredictionInput =
-    { diagnosis : String
-    , confidence : Int
+    { diagnosis : FormField String
+    , confidence : FormField Int
+    }
+
+
+type Validity
+    = Valid
+    | Invalid String
+
+
+type alias FormField a =
+    { value : a
+    , validity : Validity
     }
 
 
 type alias CaseInput =
-    { reference : String
+    { reference : FormField String
     , predictions : List PredictionInput
-    , deadline : Time.Posix
+    , deadline : FormField Time.Posix
     }
 
 
@@ -95,6 +100,7 @@ type Msg
     | UrlChanged Url.Url
     | GotResponse State
     | CaseChanged CaseInput
+    | SubmitCase
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -125,6 +131,9 @@ update msg model =
             , Cmd.none
             )
 
+        SubmitCase ->
+            ( model, Cmd.none )
+
 
 
 -- SUBSCRIPTIONS
@@ -139,7 +148,7 @@ subscriptions _ =
 -- VIEW
 
 
-view : Model -> Browser.Document Msg
+view : Model -> Document Msg
 view model =
     { title = "Predictions"
     , body =
@@ -308,24 +317,48 @@ displayOutcome outcome =
         )
 
 
+validateNonEmptyField : String -> String -> FormField String
+validateNonEmptyField fieldName reference =
+    FormField
+        reference
+        (if
+            String.isEmpty
+                reference
+         then
+            Invalid <| fieldName ++ " is required"
+
+         else
+            Valid
+        )
+
+
 caseReferenceChanged : CaseInput -> String -> Msg
 caseReferenceChanged caseInput reference =
-    CaseChanged { caseInput | reference = reference }
+    CaseChanged { caseInput | reference = validateReference reference }
+
+
+validateDeadline : String -> FormField Time.Posix
+validateDeadline deadline =
+    case Iso8601.toTime deadline of
+        Ok value ->
+            FormField value Valid
+
+        _ ->
+            FormField (Time.millisToPosix 0) (Invalid "Could not parse as ISO-8601 datetime string")
 
 
 caseDeadlineChanged : CaseInput -> String -> Msg
 caseDeadlineChanged caseInput deadline =
-    case Iso8601.toTime deadline of
-        Ok value ->
-            CaseChanged { caseInput | deadline = value }
+    CaseChanged { caseInput | deadline = validateDeadline deadline }
 
-        _ ->
-            CaseChanged { caseInput | deadline = Time.millisToPosix 0 }
+
+blankPrediction =
+    PredictionInput (validateDiagnosis "") (validateConfidence "0")
 
 
 addNewLine : CaseInput -> Msg
 addNewLine caseInput =
-    CaseChanged { caseInput | predictions = caseInput.predictions ++ [ PredictionInput "" 0 ] }
+    CaseChanged { caseInput | predictions = caseInput.predictions ++ [ blankPrediction ] }
 
 
 predictionChanged : Int -> PredictionInput -> CaseInput -> Msg
@@ -333,39 +366,115 @@ predictionChanged index newPrediction caseInput =
     CaseChanged { caseInput | predictions = List.take index caseInput.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseInput.predictions }
 
 
+validateDiagnosis =
+    validateNonEmptyField "Diagnosis"
+
+
+validateReference =
+    validateNonEmptyField "Reference"
+
+
 diagnosisChanged : Int -> PredictionInput -> CaseInput -> String -> Msg
 diagnosisChanged index oldPrediction caseInput diagnosis =
-    predictionChanged index { oldPrediction | diagnosis = diagnosis } caseInput
+    predictionChanged index { oldPrediction | diagnosis = validateDiagnosis diagnosis } caseInput
+
+
+validateConfidence : String -> FormField Int
+validateConfidence confidence =
+    case String.toInt confidence of
+        Just a ->
+            FormField a <|
+                if a < 0 then
+                    Invalid "Minimum confidence is 0%"
+
+                else if a > 100 then
+                    Invalid "Maximum confidence is 100%"
+
+                else
+                    Valid
+
+        Nothing ->
+            FormField -1 (Invalid "Enter a number")
 
 
 confidenceChanged : Int -> PredictionInput -> CaseInput -> String -> Msg
 confidenceChanged index oldPrediction caseInput confidence =
-    predictionChanged index { oldPrediction | confidence = Maybe.withDefault 0 (String.toInt confidence) } caseInput
+    predictionChanged index { oldPrediction | confidence = validateConfidence confidence } caseInput
 
 
 displayPrediction : CaseInput -> Int -> PredictionInput -> Html Msg
 displayPrediction caseInput index prediction =
-    div [] [ input [ placeholder "Diagnosis", value prediction.diagnosis, onInput (diagnosisChanged index prediction caseInput) ] [], input [ type_ "number", Html.Attributes.min "0", Html.Attributes.max "100", value (String.fromInt prediction.confidence), onInput (confidenceChanged index prediction caseInput) ] [] ]
-
-
-printPrediction : PredictionInput -> Html Msg
-printPrediction prediction =
-    div []
-        [ text <| prediction.diagnosis ++ ": " ++ String.fromInt prediction.confidence ++ "% confidence"
+    fieldset []
+        [ div []
+            [ input [ placeholder "Diagnosis", value prediction.diagnosis.value, onInput (diagnosisChanged index prediction caseInput) ] []
+            , displayValidity prediction.diagnosis.validity
+            ]
+        , div []
+            [ input [ placeholder "Confidence (%)", type_ "number", value (String.fromInt prediction.confidence.value), onInput (confidenceChanged index prediction caseInput) ] []
+            , displayValidity prediction.confidence.validity
+            ]
         ]
+
+
+printPrediction : PredictionInput -> List (Html Msg)
+printPrediction prediction =
+    [ text <| prediction.diagnosis.value ++ ": " ++ String.fromInt prediction.confidence.value ++ "% confidence"
+    ]
+
+
+displayValidity : Validity -> Html Msg
+displayValidity valid =
+    case valid of
+        Valid ->
+            span [ style "background-color" "green", style "color" "white" ] [ text "✓" ]
+
+        Invalid string ->
+            span [ style "background-color" "red", style "color" "white" ] [ text ("✗ " ++ string) ]
+
+
+isValidPrediction : PredictionInput -> Bool
+isValidPrediction predictionInput =
+    List.all isValid [ predictionInput.diagnosis.validity, predictionInput.confidence.validity ]
+
+
+isValidCase : CaseInput -> Bool
+isValidCase caseInput =
+    isValid caseInput.reference.validity
+        && isValid caseInput.deadline.validity
+        && not (List.isEmpty caseInput.predictions)
+        && List.all isValidPrediction caseInput.predictions
+
+
+isValid : Validity -> Bool
+isValid validity =
+    validity == Valid
+
+
+displayDebug : CaseInput -> Html Msg
+displayDebug caseInput =
+    if isValidCase caseInput then
+        div []
+            [ h5 [] [ text caseInput.reference.value ]
+            , h6 [] [ text <| " at " ++ (Iso8601.fromTime caseInput.deadline.value |> String.dropRight 5) ]
+            , caseInput.predictions |> List.map (printPrediction >> li []) |> ul []
+            , button [ onClick SubmitCase ] [ text "Submit" ]
+            ]
+
+    else
+        text "..."
 
 
 displayNewForm : CaseInput -> Html Msg
 displayNewForm caseInput =
     div [] <|
-        [ div [] [ input [ placeholder "Case reference", value caseInput.reference, onInput (caseReferenceChanged caseInput) ] [] ]
-        , div [] [ input [ type_ "datetime-local", placeholder "Deadline", value (Iso8601.fromTime caseInput.deadline |> String.dropRight 5), onInput (caseDeadlineChanged caseInput) ] [] ]
-        ]
-            ++ List.indexedMap (displayPrediction caseInput) caseInput.predictions
-            ++ [ div [] [ button [ onClick (addNewLine caseInput) ] [ text "+" ] ]
-               , div [] [ text <| caseInput.reference ++ " at " ++ (Iso8601.fromTime caseInput.deadline |> String.dropRight 5) ++ ": " ++ (String.fromInt <| List.length caseInput.predictions) ++ " prediction(s)" ]
+        fieldset []
+            [ div [] [ input [ placeholder "Case reference", value caseInput.reference.value, onInput (caseReferenceChanged caseInput) ] [], displayValidity caseInput.reference.validity ]
+            , div [] [ input [ type_ "datetime-local", placeholder "Deadline", value (Iso8601.fromTime caseInput.deadline.value |> String.dropRight 5), onInput (caseDeadlineChanged caseInput) ] [], displayValidity caseInput.deadline.validity ]
+            ]
+            :: List.indexedMap (displayPrediction caseInput) caseInput.predictions
+            ++ [ fieldset [] [ button [ onClick (addNewLine caseInput) ] [ text "+" ] ]
+               , displayDebug caseInput
                ]
-            ++ List.map printPrediction caseInput.predictions
 
 
 
@@ -424,7 +533,7 @@ parseUrlAndRequest model url =
                     )
 
                 New ->
-                    ( { model | state = NewCase (CaseInput "" [] (Time.millisToPosix 0)) }
+                    ( { model | state = NewCase (CaseInput (validateReference "") [ blankPrediction ] (validateDeadline "2021-08-18T12:00:00")) }
                     , Cmd.none
                     )
 
