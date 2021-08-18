@@ -1,17 +1,14 @@
-module Helper exposing (GraphqlRemoteData, toTime, viewData)
+module Helper exposing (GraphqlRemoteData, viewData)
 
 import Dict exposing (Dict)
 import Graphql.Http exposing (HttpError(..))
 import Graphql.Http.GraphqlError exposing (GraphqlError, Location, PossiblyParsedData(..))
 import Html exposing (Html, dd, div, dl, dt, li, pre, text, ul)
 import Http
-import Iso8601 as Iso
 import Json.Decode as Decode
 import List exposing (map)
-import Predictions.Scalar exposing (Id(..), Timestamp(..))
 import RemoteData exposing (RemoteData)
-import String exposing (fromInt, toInt)
-import Time exposing (Posix)
+import String exposing (fromInt)
 
 
 viewData : (a -> Html msg) -> GraphqlRemoteData a -> Html msg
@@ -110,15 +107,3 @@ viewWithGraphqlErrors errors msg =
 
 type alias GraphqlRemoteData a =
     RemoteData (Graphql.Http.Error a) a
-
-
-toTime : Timestamp -> String
-toTime timestamp =
-    case timestamp of
-        Timestamp string ->
-            case string |> toInt of
-                Just millis ->
-                    millis |> Time.millisToPosix |> Iso.fromTime
-
-                Nothing ->
-                    "Non-integer timestamp"

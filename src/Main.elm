@@ -2,15 +2,18 @@ module Main exposing (main)
 
 import Browser exposing (Document)
 import Browser.Navigation as Nav
-import Graphql.Http exposing (HttpError(..))
-import Graphql.Operation exposing (RootQuery)
+import Graphql.Http exposing (Error, HttpError(..), Request)
+import Graphql.Operation exposing (RootMutation, RootQuery)
+import Graphql.OptionalArgument as OptionalArgument
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
-import Helper exposing (GraphqlRemoteData, toTime, viewData)
+import Helper exposing (GraphqlRemoteData, viewData)
 import Html exposing (Html, a, b, button, dd, div, dl, dt, fieldset, h4, h5, h6, input, li, p, span, strong, text, ul)
 import Html.Attributes exposing (href, placeholder, style, type_, value)
 import Html.Events exposing (onClick, onInput)
-import Iso8601
+import Iso8601 exposing (fromTime)
 import Predictions.Enum.Outcome exposing (Outcome(..))
+import Predictions.InputObject
+import Predictions.Mutation as Mutation
 import Predictions.Object.Case as Case
 import Predictions.Object.Diagnosis as Diagnosis
 import Predictions.Object.Group as Group
@@ -18,8 +21,9 @@ import Predictions.Object.Judgement as Judgement
 import Predictions.Object.User as User
 import Predictions.Object.Wager as Wager
 import Predictions.Query as Query
-import Predictions.Scalar exposing (Id(..), Timestamp(..))
-import RemoteData exposing (RemoteData)
+import Predictions.Scalar exposing (Id(..))
+import RemoteData exposing (RemoteData(..))
+import ScalarCodecs exposing (Id, Timestamp)
 import String
 import Time
 import Url
@@ -66,7 +70,7 @@ type alias FormField a =
 type alias CaseInput =
     { reference : FormField String
     , predictions : List PredictionInput
-    , deadline : FormField Time.Posix
+    , deadline : FormField Timestamp
     }
 
 
@@ -100,7 +104,8 @@ type Msg
     | UrlChanged Url.Url
     | GotResponse State
     | CaseChanged CaseInput
-    | SubmitCase
+    | SubmitCase Id CaseInput
+    | CaseCreated (GraphqlRemoteData Id)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -131,8 +136,16 @@ update msg model =
             , Cmd.none
             )
 
-        SubmitCase ->
-            ( model, Cmd.none )
+        CaseCreated graphqlRemoteData ->
+            case graphqlRemoteData of
+                Success (Id id) ->
+                    ( model, Nav.pushUrl model.key <| "/case/" ++ id )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        SubmitCase id caseInput ->
+            ( model, submitCase id caseInput )
 
 
 
@@ -226,7 +239,7 @@ displayUser user =
         [ dt [] [ text "Name" ]
         , dd [] [ displayNamedNodeLink "/user" user.node ]
         , dt [] [ text "Created" ]
-        , dd [] [ text <| toTime user.created ]
+        , dd [] [ text <| fromTime user.created ]
         , dt [] [ text <| "Groups (" ++ String.fromInt (List.length user.groups) ++ ")" ]
         , dd [] [ displayNamedNodeList "/group" user.groups ]
         , dt [] [ text <| "Cases (" ++ String.fromInt (List.length user.cases) ++ ")" ]
@@ -252,7 +265,7 @@ displayCase case_ =
         [ dt [] [ text "Reference" ]
         , dd [] [ displayNamedNodeLink "/case" case_.node ]
         , dt [] [ text "Deadline" ]
-        , dd [] [ text <| toTime case_.deadline ]
+        , dd [] [ text <| fromTime case_.deadline ]
         , dt [] [ text "Creator" ]
         , dd [] [ displayNamedNodeLink "/user" case_.creator ]
         , dt [] [ text "Group" ]
@@ -282,7 +295,7 @@ displayWager wager =
     [ displayNamedNodeLink "/user" wager.creator
     , text " estimated "
     , b [] [ text <| String.fromInt wager.confidence ++ "%" ]
-    , text <| " at " ++ toTime wager.timestamp
+    , text <| " at " ++ fromTime wager.timestamp
     ]
 
 
@@ -295,7 +308,7 @@ displayJudgement judgement =
                 , strong [] [ displayOutcome judged.outcome ]
                 , text " by "
                 , displayNamedNodeLink "/user" judged.judgedBy
-                , text <| " at " ++ toTime judged.timestamp ++ ")"
+                , text <| " at " ++ fromTime judged.timestamp ++ ")"
                 ]
 
         Nothing ->
@@ -457,7 +470,9 @@ displayDebug caseInput =
             [ h5 [] [ text caseInput.reference.value ]
             , h6 [] [ text <| " at " ++ (Iso8601.fromTime caseInput.deadline.value |> String.dropRight 5) ]
             , caseInput.predictions |> List.map (printPrediction >> li []) |> ul []
-            , button [ onClick SubmitCase ] [ text "Submit" ]
+
+            --todo remove hardcoded value
+            , button [ onClick <| SubmitCase (Id "f96df53d-841c-4df6-8cc6-22344806f92e") caseInput ] [ text "Submit" ]
             ]
 
     else
@@ -541,6 +556,33 @@ parseUrlAndRequest model url =
             ( { model | state = NoData }
             , Cmd.none
             )
+
+
+
+-- New
+
+
+preparePredictionInput : PredictionInput -> Predictions.InputObject.PredictionInput
+preparePredictionInput predictionInput =
+    Predictions.InputObject.PredictionInput predictionInput.diagnosis.value predictionInput.confidence.value
+
+
+prepareNewCase : Id -> CaseInput -> Predictions.InputObject.CaseInput
+prepareNewCase creatorId caseInput =
+    Predictions.InputObject.CaseInput
+        caseInput.reference.value
+        creatorId
+        OptionalArgument.Absent
+        caseInput.deadline.value
+        (List.map preparePredictionInput caseInput.predictions)
+
+
+submitCase : Id -> CaseInput -> Cmd Msg
+submitCase creatorId caseInput =
+    Case.id
+        |> Mutation.addCase (Mutation.AddCaseRequiredArguments <| prepareNewCase creatorId caseInput)
+        |> Graphql.Http.mutationRequest "http://localhost:3000/graphql"
+        |> Graphql.Http.send (RemoteData.fromResult >> CaseCreated)
 
 
 
