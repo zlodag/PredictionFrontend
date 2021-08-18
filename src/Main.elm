@@ -68,7 +68,8 @@ type alias FormField a =
 
 
 type alias CaseInput =
-    { reference : FormField String
+    { creatorId : Id
+    , reference : FormField String
     , predictions : List PredictionInput
     , deadline : FormField Timestamp
     }
@@ -104,7 +105,7 @@ type Msg
     | UrlChanged Url.Url
     | GotResponse State
     | CaseChanged CaseInput
-    | SubmitCase Id CaseInput
+    | SubmitCase CaseInput
     | CaseCreated (GraphqlRemoteData Id)
 
 
@@ -144,8 +145,8 @@ update msg model =
                 _ ->
                     ( model, Cmd.none )
 
-        SubmitCase id caseInput ->
-            ( model, submitCase id caseInput )
+        SubmitCase caseInput ->
+            ( model, submitCase caseInput )
 
 
 
@@ -167,9 +168,8 @@ view model =
     , body =
         [ ul []
             [ li [] [ a [ href "/graphql" ] [ text "GraphiQL" ] ]
-            , viewLink "/users"
-            , viewLink "/groups"
-            , viewLink "/new"
+            , viewLink "/users/"
+            , viewLink "/groups/"
             ]
         , displayData model.state
         ]
@@ -198,13 +198,13 @@ displayData possibleData =
             text "No data!"
 
         UserList graphqlRemoteData ->
-            viewData (displayNamedNodeList "/user") graphqlRemoteData
+            viewData (displayNamedNodeList "/user/") graphqlRemoteData
 
         UserData graphqlRemoteData ->
             viewData (displayMaybe displayUser) graphqlRemoteData
 
         GroupList graphqlRemoteData ->
-            viewData (displayNamedNodeList "/group") graphqlRemoteData
+            viewData (displayNamedNodeList "/group/") graphqlRemoteData
 
         GroupData graphqlRemoteData ->
             viewData (displayMaybe displayGroup) graphqlRemoteData
@@ -220,7 +220,7 @@ displayNamedNodeLink : String -> NamedNodeData -> Html msg
 displayNamedNodeLink base_path node =
     case node.id of
         Id id ->
-            a [ href <| base_path ++ "/" ++ id ] [ text node.name ]
+            a [ href <| base_path ++ id ++ "/" ] [ text node.name ]
 
 
 displayNamedNodeList : String -> List NamedNodeData -> Html msg
@@ -235,15 +235,18 @@ displayInList displayFunction list =
 
 displayUser : UserDetailData -> Html msg
 displayUser user =
-    dl []
-        [ dt [] [ text "Name" ]
-        , dd [] [ displayNamedNodeLink "/user" user.node ]
-        , dt [] [ text "Created" ]
-        , dd [] [ text <| fromTime user.created ]
-        , dt [] [ text <| "Groups (" ++ String.fromInt (List.length user.groups) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/group" user.groups ]
-        , dt [] [ text <| "Cases (" ++ String.fromInt (List.length user.cases) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/case" user.cases ]
+    div []
+        [ dl []
+            [ dt [] [ text "Name" ]
+            , dd [] [ displayNamedNodeLink "/user/" user.node ]
+            , dt [] [ text "Created" ]
+            , dd [] [ text <| fromTime user.created ]
+            , dt [] [ text <| "Groups (" ++ String.fromInt (List.length user.groups) ++ ")" ]
+            , dd [] [ displayNamedNodeList "/group/" user.groups ]
+            , dt [] [ text <| "Cases (" ++ String.fromInt (List.length user.cases) ++ ")" ]
+            , dd [] [ displayNamedNodeList "/case/" user.cases ]
+            ]
+        , viewLink "new/"
         ]
 
 
@@ -251,11 +254,11 @@ displayGroup : GroupDetailData -> Html msg
 displayGroup group =
     dl []
         [ dt [] [ text "Name" ]
-        , dd [] [ displayNamedNodeLink "/group" group.node ]
+        , dd [] [ displayNamedNodeLink "/group/" group.node ]
         , dt [] [ text <| "Members (" ++ String.fromInt (List.length group.members) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/user" group.members ]
+        , dd [] [ displayNamedNodeList "/user/" group.members ]
         , dt [] [ text <| "Cases (" ++ String.fromInt (List.length group.cases) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/case" group.cases ]
+        , dd [] [ displayNamedNodeList "/case/" group.cases ]
         ]
 
 
@@ -263,16 +266,16 @@ displayCase : CaseDetailData -> Html msg
 displayCase case_ =
     dl []
         [ dt [] [ text "Reference" ]
-        , dd [] [ displayNamedNodeLink "/case" case_.node ]
+        , dd [] [ displayNamedNodeLink "/case/" case_.node ]
         , dt [] [ text "Deadline" ]
         , dd [] [ text <| fromTime case_.deadline ]
         , dt [] [ text "Creator" ]
-        , dd [] [ displayNamedNodeLink "/user" case_.creator ]
+        , dd [] [ displayNamedNodeLink "/user/" case_.creator ]
         , dt [] [ text "Group" ]
         , dd []
             [ case case_.group of
                 Just group ->
-                    displayNamedNodeLink "/group" group
+                    displayNamedNodeLink "/group/" group
 
                 Nothing ->
                     text "None"
@@ -292,7 +295,7 @@ displayDiagnosis diagnosis =
 
 displayWager : WagerData -> List (Html msg)
 displayWager wager =
-    [ displayNamedNodeLink "/user" wager.creator
+    [ displayNamedNodeLink "/user/" wager.creator
     , text " estimated "
     , b [] [ text <| String.fromInt wager.confidence ++ "%" ]
     , text <| " at " ++ fromTime wager.timestamp
@@ -307,7 +310,7 @@ displayJudgement judgement =
                 [ text " Judged as "
                 , strong [] [ displayOutcome judged.outcome ]
                 , text " by "
-                , displayNamedNodeLink "/user" judged.judgedBy
+                , displayNamedNodeLink "/user/" judged.judgedBy
                 , text <| " at " ++ fromTime judged.timestamp ++ ")"
                 ]
 
@@ -470,9 +473,7 @@ displayDebug caseInput =
             [ h5 [] [ text caseInput.reference.value ]
             , h6 [] [ text <| " at " ++ (Iso8601.fromTime caseInput.deadline.value |> String.dropRight 5) ]
             , caseInput.predictions |> List.map (printPrediction >> li []) |> ul []
-
-            --todo remove hardcoded value
-            , button [ onClick <| SubmitCase (Id "f96df53d-841c-4df6-8cc6-22344806f92e") caseInput ] [ text "Submit" ]
+            , button [ onClick <| SubmitCase caseInput ] [ text "Submit" ]
             ]
 
     else
@@ -502,7 +503,7 @@ type Route
     | Groups
     | Group String
     | Case String
-    | New
+    | New Id
 
 
 routeParser : Parser (Route -> a) a
@@ -510,10 +511,10 @@ routeParser =
     oneOf
         [ map Users <| s "users"
         , map User <| s "user" </> string
+        , map (New << Id) <| s "user" </> string </> s "new"
         , map Groups <| s "groups"
         , map Group <| s "group" </> string
         , map Case <| s "case" </> string
-        , map New <| s "new"
         ]
 
 
@@ -547,8 +548,8 @@ parseUrlAndRequest model url =
                     , Id string |> caseDetailQuery |> makeRequest (CaseData >> GotResponse)
                     )
 
-                New ->
-                    ( { model | state = NewCase (CaseInput (validateReference "") [ blankPrediction ] (validateDeadline "2021-08-18T12:00:00")) }
+                New userId ->
+                    ( { model | state = NewCase (CaseInput userId (validateReference "") [ blankPrediction ] (validateDeadline "2021-08-18T12:00:00")) }
                     , Cmd.none
                     )
 
@@ -567,20 +568,20 @@ preparePredictionInput predictionInput =
     Predictions.InputObject.PredictionInput predictionInput.diagnosis.value predictionInput.confidence.value
 
 
-prepareNewCase : Id -> CaseInput -> Predictions.InputObject.CaseInput
-prepareNewCase creatorId caseInput =
+prepareNewCase : CaseInput -> Predictions.InputObject.CaseInput
+prepareNewCase caseInput =
     Predictions.InputObject.CaseInput
         caseInput.reference.value
-        creatorId
+        caseInput.creatorId
         OptionalArgument.Absent
         caseInput.deadline.value
         (List.map preparePredictionInput caseInput.predictions)
 
 
-submitCase : Id -> CaseInput -> Cmd Msg
-submitCase creatorId caseInput =
+submitCase : CaseInput -> Cmd Msg
+submitCase caseInput =
     Case.id
-        |> Mutation.addCase (Mutation.AddCaseRequiredArguments <| prepareNewCase creatorId caseInput)
+        |> Mutation.addCase (Mutation.AddCaseRequiredArguments <| prepareNewCase caseInput)
         |> Graphql.Http.mutationRequest "http://localhost:3000/graphql"
         |> Graphql.Http.send (RemoteData.fromResult >> CaseCreated)
 
