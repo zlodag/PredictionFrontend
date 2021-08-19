@@ -580,9 +580,10 @@ prepareNewCase caseInput =
 
 submitCase : CaseInput -> Cmd Msg
 submitCase caseInput =
-    Case.id
-        |> Mutation.addCase (Mutation.AddCaseRequiredArguments <| prepareNewCase caseInput)
-        |> Graphql.Http.mutationRequest "http://localhost:3000/graphql"
+    prepareNewCase caseInput
+        |> Mutation.AddCaseRequiredArguments
+        |> Mutation.addCase
+        |> Graphql.Http.mutationRequest graphQlEndpoint
         |> Graphql.Http.send (RemoteData.fromResult >> CaseCreated)
 
 
@@ -746,5 +747,9 @@ mapToJudgementData =
 makeRequest : (GraphqlRemoteData decodesTo -> Msg) -> SelectionSet decodesTo RootQuery -> Cmd Msg
 makeRequest msgConstructor set =
     set
-        |> Graphql.Http.queryRequest "http://localhost:3000/graphql"
+        |> Graphql.Http.queryRequest graphQlEndpoint
         |> Graphql.Http.send (RemoteData.fromResult >> msgConstructor)
+
+
+graphQlEndpoint =
+    "http://localhost:3000/graphql"
