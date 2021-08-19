@@ -4,15 +4,15 @@ import Browser exposing (Document)
 import Browser.Navigation as Nav
 import Graphql.Http exposing (Error, HttpError(..), Request)
 import Graphql.Operation exposing (RootMutation, RootQuery)
-import Graphql.OptionalArgument as OptionalArgument exposing (OptionalArgument(..))
+import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, viewData)
-import Html exposing (Html, a, b, button, dd, div, dl, dt, fieldset, h4, input, li, option, p, select, span, strong, text, ul)
-import Html.Attributes exposing (href, placeholder, selected, style, type_, value)
+import Html exposing (Html, a, b, button, dd, div, dl, dt, fieldset, h4, input, label, li, option, p, select, span, strong, text, ul)
+import Html.Attributes exposing (disabled, href, required, selected, step, style, type_, value)
 import Html.Events exposing (onClick, onInput)
 import Iso8601 exposing (fromTime)
 import Predictions.Enum.Outcome exposing (Outcome(..))
-import Predictions.InputObject
+import Predictions.InputObject exposing (CaseInput, PredictionInput)
 import Predictions.Mutation as Mutation
 import Predictions.Object.Case as Case
 import Predictions.Object.Diagnosis as Diagnosis
@@ -50,21 +50,23 @@ main =
 -- MODEL
 
 
-type alias PredictionInput =
+type alias PredictionData =
     { diagnosis : FormField String
     , confidence : FormField Int
     }
 
 
-type Validity
-    = Valid
-    | Invalid String
+type alias InputValue =
+    String
 
 
-type alias FormField a =
-    { value : a
-    , validity : Validity
-    }
+type alias ValidationMessage =
+    String
+
+
+type FormField a
+    = Valid a InputValue
+    | Invalid ValidationMessage InputValue
 
 
 type alias CaseData =
@@ -72,7 +74,7 @@ type alias CaseData =
     , userGroups : GraphqlRemoteData GroupListResponse
     , groupId : Maybe Id
     , reference : FormField String
-    , predictions : List PredictionInput
+    , predictions : List PredictionData
     , deadline : FormField Timestamp
     }
 
@@ -106,8 +108,8 @@ type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
     | GotResponse State
-    | CaseChanged CaseData
-    | SubmitCase CaseData
+    | ChangeCase CaseData
+    | SubmitCase CaseInput
     | CaseCreated (GraphqlRemoteData Id)
 
 
@@ -138,8 +140,8 @@ update msg model =
             , Cmd.none
             )
 
-        CaseChanged caseInput ->
-            ( { model | state = NewCase caseInput }
+        ChangeCase caseData ->
+            ( { model | state = NewCase caseData }
             , Cmd.none
             )
 
@@ -151,8 +153,8 @@ update msg model =
                 _ ->
                     ( model, Cmd.none )
 
-        SubmitCase caseInput ->
-            ( model, submitCase caseInput )
+        SubmitCase caseData ->
+            ( model, submitCase caseData )
 
 
 
@@ -218,8 +220,8 @@ displayData possibleData =
         CaseDetail graphqlRemoteData ->
             viewData (displayMaybe displayCase) graphqlRemoteData
 
-        NewCase input ->
-            displayNewForm input
+        NewCase caseData ->
+            displayNewForm caseData
 
 
 displayNamedNodeLink : String -> NamedNodeData -> Html msg
@@ -339,53 +341,55 @@ displayOutcome outcome =
         )
 
 
-validateNonEmptyField : String -> String -> FormField String
-validateNonEmptyField fieldName reference =
-    FormField
-        reference
-        (if
-            String.isEmpty
-                reference
-         then
-            Invalid <| fieldName ++ " is required"
+validateNonEmptyField : String -> InputValue -> FormField String
+validateNonEmptyField fieldName inputValue =
+    let
+        trimmed =
+            String.trim inputValue
+    in
+    inputValue
+        |> (if String.isEmpty trimmed then
+                Invalid (fieldName ++ " is required")
 
-         else
-            Valid
-        )
+            else
+                Valid trimmed
+           )
 
 
 caseReferenceChanged : CaseData -> String -> Msg
-caseReferenceChanged caseInput reference =
-    CaseChanged { caseInput | reference = validateReference reference }
+caseReferenceChanged caseData reference =
+    ChangeCase { caseData | reference = validateReference reference }
 
 
-validateDeadline : String -> FormField Time.Posix
+validateDeadline : InputValue -> FormField Time.Posix
 validateDeadline deadline =
-    case Iso8601.toTime deadline of
-        Ok value ->
-            FormField value Valid
+    deadline
+        |> (case Iso8601.toTime deadline of
+                Ok value ->
+                    Valid value
 
-        _ ->
-            FormField (Time.millisToPosix 0) (Invalid "Could not parse as ISO-8601 datetime string")
+                _ ->
+                    Invalid "Could not parse as ISO-8601 datetime string"
+           )
 
 
 caseDeadlineChanged : CaseData -> String -> Msg
-caseDeadlineChanged caseInput deadline =
-    CaseChanged { caseInput | deadline = validateDeadline deadline }
+caseDeadlineChanged caseData deadline =
+    ChangeCase { caseData | deadline = validateDeadline deadline }
 
 
 blankPrediction =
-    PredictionInput (validateDiagnosis "") (validateConfidence "0")
+    PredictionData (validateDiagnosis "") (validateConfidence "")
 
 
 addNewLine : CaseData -> Msg
-addNewLine caseInput =
-    CaseChanged { caseInput | predictions = caseInput.predictions ++ [ blankPrediction ] }
+addNewLine caseData =
+    ChangeCase { caseData | predictions = caseData.predictions ++ [ blankPrediction ] }
 
 
-predictionChanged : Int -> PredictionInput -> CaseData -> Msg
-predictionChanged index newPrediction caseInput =
-    CaseChanged { caseInput | predictions = List.take index caseInput.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseInput.predictions }
+changePrediction : Int -> PredictionData -> CaseData -> Msg
+changePrediction index newPrediction caseData =
+    ChangeCase { caseData | predictions = List.take index caseData.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseData.predictions }
 
 
 validateDiagnosis =
@@ -393,113 +397,131 @@ validateDiagnosis =
 
 
 validateReference =
-    validateNonEmptyField "Reference"
+    validateNonEmptyField "Case reference"
 
 
-diagnosisChanged : Int -> PredictionInput -> CaseData -> String -> Msg
-diagnosisChanged index oldPrediction caseInput diagnosis =
-    predictionChanged index { oldPrediction | diagnosis = validateDiagnosis diagnosis } caseInput
+diagnosisChanged : Int -> PredictionData -> CaseData -> String -> Msg
+diagnosisChanged index oldPrediction caseData diagnosis =
+    changePrediction index { oldPrediction | diagnosis = validateDiagnosis diagnosis } caseData
 
 
-validateConfidence : String -> FormField Int
+validateConfidence : InputValue -> FormField Int
 validateConfidence confidence =
-    case String.toInt confidence of
-        Just a ->
-            FormField a <|
-                --todo change this to html validation
-                if a < 0 then
-                    Invalid "Minimum confidence is 0%"
+    confidence
+        |> (case String.toInt confidence of
+                Just a ->
+                    if a < 0 then
+                        Invalid "Minimum confidence is 0%"
 
-                else if a > 100 then
-                    Invalid "Maximum confidence is 100%"
+                    else if a > 100 then
+                        Invalid "Maximum confidence is 100%"
 
-                else
-                    Valid
+                    else
+                        Valid a
 
-        Nothing ->
-            FormField -1 (Invalid "Enter a number")
-
-
-confidenceChanged : Int -> PredictionInput -> CaseData -> String -> Msg
-confidenceChanged index oldPrediction caseInput confidence =
-    predictionChanged index { oldPrediction | confidence = validateConfidence confidence } caseInput
+                Nothing ->
+                    Invalid "Enter an integer from 0 to 100"
+           )
 
 
-displayPrediction : CaseData -> Int -> PredictionInput -> Html Msg
-displayPrediction caseInput index prediction =
+confidenceChanged : Int -> PredictionData -> CaseData -> String -> Msg
+confidenceChanged index oldPrediction caseData confidence =
+    changePrediction index { oldPrediction | confidence = validateConfidence confidence } caseData
+
+
+removePrediction : Int -> CaseData -> Msg
+removePrediction index caseData =
+    ChangeCase { caseData | predictions = List.take index caseData.predictions ++ List.drop (index + 1) caseData.predictions }
+
+
+displayPrediction : CaseData -> Int -> PredictionData -> Html Msg
+displayPrediction caseData index prediction =
     fieldset []
         [ div []
-            [ input [ placeholder "Diagnosis", value prediction.diagnosis.value, onInput (diagnosisChanged index prediction caseInput) ] []
-            , displayValidity prediction.diagnosis.validity
+            [ label [] [ text "Diagnosis: " ]
+            , input
+                [ required True
+                , value <| getInputValue prediction.diagnosis
+                , onInput (diagnosisChanged index prediction caseData)
+                ]
+                []
+            , displayValidity prediction.diagnosis
             ]
         , div []
-            [ input [ placeholder "Confidence (%)", type_ "number", value (String.fromInt prediction.confidence.value), onInput (confidenceChanged index prediction caseInput) ] []
-            , displayValidity prediction.confidence.validity
+            [ label [] [ text "Confidence (%): " ]
+            , input
+                [ type_ "number"
+                , step "1"
+                , Html.Attributes.min "0"
+                , Html.Attributes.max "100"
+                , value <| getInputValue prediction.confidence
+                , onInput (confidenceChanged index prediction caseData)
+                ]
+                []
+            , displayValidity prediction.confidence
             ]
+        , button [ onClick (removePrediction index caseData), disabled <| List.length caseData.predictions == 1 ] [ text "➖" ]
         ]
 
 
-printPrediction : PredictionInput -> List (Html Msg)
+printPrediction : PredictionInput -> Html Msg
 printPrediction prediction =
-    [ text <| prediction.diagnosis.value ++ ": " ++ String.fromInt prediction.confidence.value ++ "% confidence"
-    ]
+    dl []
+        [ dt [] [ text "Diagnosis" ]
+        , dd [] [ text prediction.diagnosis ]
+        , dt [] [ text "Confidence" ]
+        , dd [] [ text <| String.fromInt prediction.confidence ++ "%" ]
+        ]
 
 
-displayValidity : Validity -> Html Msg
-displayValidity valid =
-    case valid of
-        Valid ->
+getInputValue : FormField a -> InputValue
+getInputValue field =
+    case field of
+        Valid _ value ->
+            value
+
+        Invalid _ value ->
+            value
+
+
+displayValidity : FormField a -> Html Msg
+displayValidity field =
+    case field of
+        Valid _ _ ->
             span [ style "background-color" "green", style "color" "white" ] [ text "✓" ]
 
-        Invalid string ->
-            span [ style "background-color" "red", style "color" "white" ] [ text ("✗ " ++ string) ]
-
-
-isValidPrediction : PredictionInput -> Bool
-isValidPrediction predictionInput =
-    List.all isValid [ predictionInput.diagnosis.validity, predictionInput.confidence.validity ]
-
-
-isValidCase : CaseData -> Bool
-isValidCase caseInput =
-    isValid caseInput.reference.validity
-        && isValid caseInput.deadline.validity
-        && not (List.isEmpty caseInput.predictions)
-        && List.all isValidPrediction caseInput.predictions
-
-
-isValid : Validity -> Bool
-isValid validity =
-    validity == Valid
+        Invalid validationMessage _ ->
+            span [ style "background-color" "red", style "color" "white" ] [ text ("✗ " ++ validationMessage) ]
 
 
 displayDebug : CaseData -> Html Msg
-displayDebug caseInput =
-    if isValidCase caseInput then
-        dl []
-            [ dt [] [ text "Reference" ]
-            , dd [] [ text caseInput.reference.value ]
-            , dt [] [ text "Deadline" ]
-            , dd [] [ caseInput.deadline.value |> Iso8601.fromTime >> String.dropRight 5 |> text ]
-            , dt [] [ text "Group" ]
-            , dd []
-                [ text <|
-                    case caseInput.groupId of
-                        Just value ->
-                            case value of
-                                Id id ->
+displayDebug data =
+    case prepareCaseInput data of
+        Just caseData ->
+            div []
+                [ dl []
+                    [ dt [] [ text "Reference" ]
+                    , dd [] [ text caseData.reference ]
+                    , dt [] [ text "Deadline" ]
+                    , dd [] [ caseData.deadline |> Iso8601.fromTime >> String.dropRight 5 |> text ]
+                    , dt [] [ text "Group" ]
+                    , dd []
+                        [ text <|
+                            case caseData.groupId of
+                                Present (Id id) ->
                                     id
 
-                        Nothing ->
-                            "None"
+                                _ ->
+                                    "None"
+                        ]
+                    , dt [] [ text "Predictions" ]
+                    , dd [] [ caseData.predictions |> List.map (printPrediction >> List.singleton >> li []) |> ul [] ]
+                    ]
+                , button [ onClick <| SubmitCase caseData ] [ text "Submit" ]
                 ]
-            , dt [] [ text "Predictions" ]
-            , dd [] [ caseInput.predictions |> List.map (printPrediction >> li []) |> ul [] ]
-            , button [ onClick <| SubmitCase caseInput ] [ text "Submit" ]
-            ]
 
-    else
-        text "..."
+        Nothing ->
+            text "..."
 
 
 displayOption : (NamedNodeData -> Bool) -> NamedNodeData -> Html Msg
@@ -510,9 +532,9 @@ displayOption isSelected node =
 
 
 caseGroupChanged : CaseData -> String -> Msg
-caseGroupChanged caseInput groupId =
-    CaseChanged
-        { caseInput
+caseGroupChanged caseData groupId =
+    ChangeCase
+        { caseData
             | groupId =
                 if String.isEmpty groupId then
                     Nothing
@@ -528,24 +550,27 @@ determineSelected selectedId node =
 
 
 displayGroupSelect : CaseData -> GroupListResponse -> Html Msg
-displayGroupSelect caseInput groups =
-    select [ onInput <| caseGroupChanged caseInput ] <|
-        option [ value "", selected False ] [ text "<Private>" ]
-            --option [ value "", selected (caseInput.groupId == Nothing) ] [ text "<Private>" ]
-            :: List.map (determineSelected caseInput.groupId |> displayOption) groups
+displayGroupSelect caseData groups =
+    div []
+        [ label [] [ text "Group: " ]
+        , select [ onInput <| caseGroupChanged caseData ] <|
+            option [ value "", selected False ] [ text "<Private>" ]
+                --option [ value "", selected (caseData.groupId == Nothing) ] [ text "<Private>" ]
+                :: List.map (determineSelected caseData.groupId |> displayOption) groups
+        ]
 
 
 displayNewForm : CaseData -> Html Msg
-displayNewForm caseInput =
+displayNewForm caseData =
     div [] <|
         fieldset []
-            [ div [] [ input [ placeholder "Case reference", value caseInput.reference.value, onInput (caseReferenceChanged caseInput) ] [], displayValidity caseInput.reference.validity ]
-            , div [] [ input [ type_ "datetime-local", placeholder "Deadline", value (Iso8601.fromTime caseInput.deadline.value |> String.dropRight 5), onInput (caseDeadlineChanged caseInput) ] [], displayValidity caseInput.deadline.validity ]
-            , viewData (displayGroupSelect caseInput) caseInput.userGroups
+            [ div [] [ label [] [ text "Case reference: " ], input [ required True, value <| getInputValue caseData.reference, onInput (caseReferenceChanged caseData) ] [], displayValidity caseData.reference ]
+            , div [] [ label [] [ text "Deadline: " ], input [ required True, type_ "datetime-local", value <| getInputValue caseData.deadline, onInput (caseDeadlineChanged caseData) ] [], displayValidity caseData.deadline ]
+            , viewData (displayGroupSelect caseData) caseData.userGroups
             ]
-            :: List.indexedMap (displayPrediction caseInput) caseInput.predictions
-            ++ [ fieldset [] [ button [ onClick (addNewLine caseInput) ] [ text "+" ] ]
-               , displayDebug caseInput
+            :: List.indexedMap (displayPrediction caseData) caseData.predictions
+            ++ [ fieldset [] [ button [ onClick (addNewLine caseData) ] [ text "➕" ] ]
+               , displayDebug caseData
                ]
 
 
@@ -609,17 +634,17 @@ parseUrlAndRequest model url =
                         withUserId args =
                             { args | userId = Present userId }
 
-                        createCaseData creatorId groupList =
+                        createCaseData groupList =
                             CaseData
-                                creatorId
+                                userId
                                 groupList
                                 Nothing
                                 (validateReference "")
                                 [ blankPrediction ]
-                                (validateDeadline "2021-08-18T12:00:00")
+                                (validateDeadline "")
                     in
                     ( { model | state = NoData }
-                    , groupListQuery withUserId |> makeRequest (createCaseData userId >> CaseChanged)
+                    , groupListQuery withUserId |> makeRequest (createCaseData >> ChangeCase)
                     )
 
         Nothing ->
@@ -632,24 +657,59 @@ parseUrlAndRequest model url =
 -- New
 
 
-preparePredictionInput : PredictionInput -> Predictions.InputObject.PredictionInput
-preparePredictionInput predictionInput =
-    Predictions.InputObject.PredictionInput predictionInput.diagnosis.value predictionInput.confidence.value
+preparePredictionInput : PredictionData -> Maybe PredictionInput
+preparePredictionInput prediction =
+    case prediction.diagnosis of
+        Valid diagnosis _ ->
+            case prediction.confidence of
+                Valid confidence _ ->
+                    Just <| PredictionInput diagnosis confidence
+
+                Invalid _ _ ->
+                    Nothing
+
+        Invalid _ _ ->
+            Nothing
 
 
-prepareNewCase : CaseData -> Predictions.InputObject.CaseInput
-prepareNewCase caseInput =
-    Predictions.InputObject.CaseInput
-        caseInput.reference.value
-        caseInput.creatorId
-        OptionalArgument.Absent
-        caseInput.deadline.value
-        (List.map preparePredictionInput caseInput.predictions)
+prepareCaseInput : CaseData -> Maybe CaseInput
+prepareCaseInput caseData =
+    case caseData.reference of
+        Valid reference _ ->
+            case caseData.deadline of
+                Valid deadline _ ->
+                    let
+                        predictions =
+                            List.filterMap preparePredictionInput caseData.predictions
+                    in
+                    if List.isEmpty predictions || List.length predictions /= List.length caseData.predictions then
+                        Nothing
+
+                    else
+                        Just <|
+                            CaseInput
+                                reference
+                                caseData.creatorId
+                                (case caseData.groupId of
+                                    Just id ->
+                                        Present id
+
+                                    Nothing ->
+                                        Absent
+                                )
+                                deadline
+                                predictions
+
+                Invalid _ _ ->
+                    Nothing
+
+        Invalid _ _ ->
+            Nothing
 
 
-submitCase : CaseData -> Cmd Msg
-submitCase caseInput =
-    prepareNewCase caseInput
+submitCase : CaseInput -> Cmd Msg
+submitCase caseData =
+    caseData
         |> Mutation.AddCaseRequiredArguments
         |> Mutation.addCase
         |> Graphql.Http.mutationRequest graphQlEndpoint
