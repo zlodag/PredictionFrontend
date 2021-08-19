@@ -4,7 +4,7 @@ import Browser exposing (Document)
 import Browser.Navigation as Nav
 import Graphql.Http exposing (Error, HttpError(..), Request)
 import Graphql.Operation exposing (RootMutation, RootQuery)
-import Graphql.OptionalArgument as OptionalArgument
+import Graphql.OptionalArgument as OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, viewData)
 import Html exposing (Html, a, b, button, dd, div, dl, dt, fieldset, h4, h5, h6, input, li, p, span, strong, text, ul)
@@ -660,7 +660,7 @@ type alias GroupListResponse =
 
 groupListQuery : SelectionSet GroupListResponse RootQuery
 groupListQuery =
-    Query.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name
+    Query.groups identity <| SelectionSet.map2 NamedNodeData Group.id Group.name
 
 
 type alias CaseLimitedData =
