@@ -7,7 +7,7 @@ import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, viewData)
-import Html exposing (Html, a, b, button, dd, div, dl, dt, fieldset, h4, input, label, li, option, p, select, span, strong, text, ul)
+import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, h4, input, label, li, option, p, select, span, strong, text, ul)
 import Html.Attributes exposing (disabled, href, required, selected, step, style, type_, value)
 import Html.Events exposing (onClick, onInput)
 import Iso8601 exposing (fromTime)
@@ -15,6 +15,7 @@ import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.InputObject exposing (CaseInput, PredictionInput)
 import Predictions.Mutation as Mutation
 import Predictions.Object.Case as Case
+import Predictions.Object.Comment as Comment
 import Predictions.Object.Diagnosis as Diagnosis
 import Predictions.Object.Group as Group
 import Predictions.Object.Judgement as Judgement
@@ -290,6 +291,8 @@ displayCase case_ =
             ]
         , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length case_.diagnoses) ++ ")" ]
         , dd [] [ displayInList displayDiagnosis case_.diagnoses ]
+        , dt [] [ text <| "Comments (" ++ String.fromInt (List.length case_.comments) ++ ")" ]
+        , dd [] [ displayInList displayComment case_.comments ]
         ]
 
 
@@ -298,6 +301,13 @@ displayDiagnosis diagnosis =
     [ h4 [] [ text diagnosis.node.name ]
     , displayInList displayWager diagnosis.wagers
     , displayJudgement diagnosis.judgement
+    ]
+
+
+displayComment : CommentData -> List (Html msg)
+displayComment comment =
+    [ span [] [ displayNamedNodeLink "/user/" comment.creator, text <| " at " ++ fromTime comment.timestamp ]
+    , blockquote [] [ text comment.text ]
     ]
 
 
@@ -796,22 +806,38 @@ type alias CaseLimitedData =
     NamedNodeData
 
 
+type alias CommentData =
+    { creator : NamedNodeData
+    , timestamp : Timestamp
+    , text : String
+    }
+
+
+mapToCommentData =
+    SelectionSet.map3 CommentData
+        (Comment.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
+        Comment.timestamp
+        Comment.text
+
+
 type alias CaseDetailData =
     { node : NamedNodeData
     , creator : NamedNodeData
     , group : Maybe NamedNodeData
     , deadline : Timestamp
     , diagnoses : List DiagnosisDetailData
+    , comments : List CommentData
     }
 
 
 mapToCaseDetailData =
-    SelectionSet.map5 CaseDetailData
+    SelectionSet.map6 CaseDetailData
         (SelectionSet.map2 NamedNodeData Case.id Case.reference)
         (Case.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
         (Case.group <| SelectionSet.map2 NamedNodeData Group.id Group.name)
         Case.deadline
         (Case.diagnoses <| mapToDiagnosisDetailData)
+        (Case.comments <| mapToCommentData)
 
 
 type alias CaseDetailResponse =
