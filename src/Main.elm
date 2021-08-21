@@ -139,10 +139,12 @@ type Msg
     | GotResponse State
     | ChangeCase CaseData
     | SubmitCase CaseInput
+    | SubmitComment CaseDetailData Id String
     | CaseCreated (GraphqlRemoteData Id)
 
 
 
+--| CommentCreated (GraphqlRemoteData CommentData)
 --| GotUserGroups Id (GraphqlRemoteData GroupListResponse)
 
 
@@ -198,6 +200,35 @@ update msg model =
                 Nothing ->
                     ( model, Cmd.none )
 
+        SubmitComment caseDetail creatorId string ->
+            let
+                alterCase : GraphqlRemoteData CommentData -> Msg
+                alterCase data =
+                    GotResponse
+                        << CaseDetail
+                        << Success
+                    <|
+                        Just
+                            { caseDetail
+                                | newComment = Nothing
+                                , comments =
+                                    caseDetail.comments
+                                        ++ (case data of
+                                                Success a ->
+                                                    [ a ]
+
+                                                _ ->
+                                                    []
+                                           )
+                            }
+            in
+            ( model
+            , mapToCommentData
+                |> Mutation.addComment (Mutation.AddCommentRequiredArguments creatorId caseDetail.node.id string)
+                |> Graphql.Http.mutationRequest graphQlEndpoint
+                |> Graphql.Http.send (RemoteData.fromResult >> alterCase)
+            )
+
 
 
 -- SUBSCRIPTIONS
@@ -223,7 +254,7 @@ view model =
             , viewLink "/groups"
             , viewLink "/new"
             ]
-        , displayData model.state
+        , displayData model
         ]
     }
 
@@ -256,9 +287,9 @@ displayMaybe displayFunction data =
             div [] [ text "Not found" ]
 
 
-displayData : State -> Html Msg
-displayData possibleData =
-    case possibleData of
+displayData : Model -> Html Msg
+displayData model =
+    case model.state of
         NoData ->
             text "No data!"
 
@@ -275,7 +306,7 @@ displayData possibleData =
             viewData (displayMaybe displayGroup) graphqlRemoteData
 
         CaseDetail graphqlRemoteData ->
-            viewData (displayMaybe displayCase) graphqlRemoteData
+            viewData (displayMaybe <| displayCase model.auth) graphqlRemoteData
 
         NewCase caseData ->
             displayNewForm caseData
@@ -290,12 +321,12 @@ displayNamedNodeLink base_path node =
 
 displayNamedNodeList : String -> List NamedNodeData -> Html msg
 displayNamedNodeList base_path nodes =
-    displayInList (displayNamedNodeLink base_path >> List.singleton) nodes
+    ul [] <| displayListItems (displayNamedNodeLink base_path >> List.singleton) nodes
 
 
-displayInList : (a -> List (Html msg)) -> List a -> Html msg
-displayInList displayFunction list =
-    ul [] <| List.map (li [] << displayFunction) list
+displayListItems : (a -> List (Html msg)) -> List a -> List (Html msg)
+displayListItems displayFunction list =
+    List.map (li [] << displayFunction) list
 
 
 displayUser : UserDetailData -> Html msg
@@ -324,8 +355,8 @@ displayGroup group =
         ]
 
 
-displayCase : CaseDetailData -> Html msg
-displayCase case_ =
+displayCase : Maybe Auth -> CaseDetailData -> Html Msg
+displayCase auth case_ =
     dl []
         [ dt [] [ text "Reference" ]
         , dd [] [ displayNamedNodeLink "/case/" case_.node ]
@@ -343,18 +374,46 @@ displayCase case_ =
                     text "None"
             ]
         , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length case_.diagnoses) ++ ")" ]
-        , dd [] [ displayInList displayDiagnosis case_.diagnoses ]
+        , dd [] [ ul [] <| displayListItems displayDiagnosis case_.diagnoses ]
         , dt [] [ text <| "Comments (" ++ String.fromInt (List.length case_.comments) ++ ")" ]
-        , dd [] [ displayInList displayComment case_.comments ]
+        , dd []
+            [ ul [] <|
+                displayListItems displayComment case_.comments
+                    ++ (case auth of
+                            Just a ->
+                                [ li [] <| displayNewComment a.currentUserId case_ ]
+
+                            Nothing ->
+                                []
+                       )
+            ]
         ]
 
 
 displayDiagnosis : DiagnosisDetailData -> List (Html msg)
 displayDiagnosis diagnosis =
     [ h4 [] [ text diagnosis.node.name ]
-    , displayInList displayWager diagnosis.wagers
+    , ul [] <| displayListItems displayWager diagnosis.wagers
     , displayJudgement diagnosis.judgement
     ]
+
+
+commentChanged : CaseDetailData -> String -> Msg
+commentChanged caseDetail newComment =
+    { caseDetail | newComment = Just newComment } |> Just >> Success >> CaseDetail >> GotResponse
+
+
+displayNewComment : Id -> CaseDetailData -> List (Html Msg)
+displayNewComment currentUserId caseDetail =
+    case caseDetail.newComment of
+        Just string ->
+            [ label [] [ text "New comment: " ]
+            , input [ type_ "text", onInput <| commentChanged caseDetail ] [ text string ]
+            , button [ onClick <| SubmitComment caseDetail currentUserId string ] [ text "Add" ]
+            ]
+
+        Nothing ->
+            [ button [ onClick <| commentChanged caseDetail "" ] [ text "Add comment" ] ]
 
 
 displayComment : CommentData -> List (Html msg)
@@ -786,7 +845,14 @@ submitCase caseData =
 
 
 
--- Fetch
+--
+--
+--submitComment : Mutation.AddCommentRequiredArguments -> Cmd Msg
+--submitComment comment =
+--    Mutation.addComment comment
+--        |> Graphql.Http.mutationRequest graphQlEndpoint
+--        |> Graphql.Http.send (RemoteData.fromResult >> CommentCreated)
+--
 
 
 type alias NamedNodeData =
@@ -880,7 +946,8 @@ mapToCommentData =
 
 
 type alias CaseDetailData =
-    { node : NamedNodeData
+    { newComment : Maybe String
+    , node : NamedNodeData
     , creator : NamedNodeData
     , group : Maybe NamedNodeData
     , deadline : Timestamp
@@ -890,7 +957,7 @@ type alias CaseDetailData =
 
 
 mapToCaseDetailData =
-    SelectionSet.map6 CaseDetailData
+    SelectionSet.map6 (CaseDetailData Nothing)
         (SelectionSet.map2 NamedNodeData Case.id Case.reference)
         (Case.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
         (Case.group <| SelectionSet.map2 NamedNodeData Group.id Group.name)
