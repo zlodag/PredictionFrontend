@@ -71,8 +71,7 @@ type FormField a
 
 
 type alias CaseData =
-    { creatorId : Id
-    , userGroups : GraphqlRemoteData GroupListResponse
+    { userGroups : GraphqlRemoteData GroupListResponse
     , groupId : Maybe Id
     , reference : FormField String
     , predictions : List PredictionData
@@ -93,21 +92,50 @@ type State
 type alias Model =
     { key : Nav.Key
     , state : State
+    , auth : Maybe Auth
     }
+
+
+type alias Auth =
+    { allUsers : List NamedNodeData
+    , currentUserId : Id
+    }
+
+
+usersResponseHandler : Url.Url -> GraphqlRemoteData UserListResponse -> Msg
+usersResponseHandler url response =
+    GotAuth url
+        (case response of
+            Success users ->
+                case List.head users of
+                    Just a ->
+                        Just <| Auth users a.id
+
+                    Nothing ->
+                        Nothing
+
+            _ ->
+                Nothing
+        )
 
 
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
 init _ url key =
-    parseUrlAndRequest (Model key NoData) url
+    ( Model key NoData Nothing
+    , userListQuery |> makeRequest (usersResponseHandler url)
+    )
 
 
 
+--parseUrlAndRequest (Model key NoData Nothing) url
 -- UPDATE
 
 
 type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
+    | GotAuth Url.Url (Maybe Auth)
+    | UserChanged Auth
     | GotResponse State
     | ChangeCase CaseData
     | SubmitCase CaseInput
@@ -136,6 +164,14 @@ update msg model =
         UrlChanged url ->
             parseUrlAndRequest model url
 
+        GotAuth url auth ->
+            parseUrlAndRequest { model | auth = auth } url
+
+        UserChanged auth ->
+            ( { model | auth = Just auth }
+            , Cmd.none
+            )
+
         GotResponse graphqlRemoteData ->
             ( { model | state = graphqlRemoteData }
             , Cmd.none
@@ -155,7 +191,12 @@ update msg model =
                     ( model, Cmd.none )
 
         SubmitCase caseData ->
-            ( model, submitCase caseData )
+            case model.auth of
+                Just a ->
+                    ( model, submitCase { caseData | creatorId = a.currentUserId } )
+
+                Nothing ->
+                    ( model, Cmd.none )
 
 
 
@@ -175,10 +216,12 @@ view : Model -> Document Msg
 view model =
     { title = "Predictions"
     , body =
-        [ ul []
+        [ displayAuth model.auth
+        , ul []
             [ li [] [ a [ href "/graphql" ] [ text "GraphiQL" ] ]
-            , viewLink "/users/"
-            , viewLink "/groups/"
+            , viewLink "/users"
+            , viewLink "/groups"
+            , viewLink "/new"
             ]
         , displayData model.state
         ]
@@ -188,6 +231,19 @@ view model =
 viewLink : String -> Html msg
 viewLink path =
     li [] [ a [ href path ] [ text path ] ]
+
+
+displayAuth : Maybe Auth -> Html Msg
+displayAuth auth =
+    case auth of
+        Just a ->
+            div []
+                [ label [] [ text "Select current user: " ]
+                , select [ onInput <| Id >> Auth a.allUsers >> UserChanged ] <| List.map ((==) a.currentUserId |> displayOption) a.allUsers
+                ]
+
+        Nothing ->
+            text "No users found"
 
 
 displayMaybe : (a -> Html msg) -> Maybe a -> Html msg
@@ -207,13 +263,13 @@ displayData possibleData =
             text "No data!"
 
         UserList graphqlRemoteData ->
-            viewData (displayNamedNodeList "/user/") graphqlRemoteData
+            viewData (displayNamedNodeList "/user") graphqlRemoteData
 
         UserDetail graphqlRemoteData ->
             viewData (displayMaybe displayUser) graphqlRemoteData
 
         GroupList graphqlRemoteData ->
-            viewData (displayNamedNodeList "/group/") graphqlRemoteData
+            viewData (displayNamedNodeList "/group") graphqlRemoteData
 
         GroupDetail graphqlRemoteData ->
             viewData (displayMaybe displayGroup) graphqlRemoteData
@@ -229,7 +285,7 @@ displayNamedNodeLink : String -> NamedNodeData -> Html msg
 displayNamedNodeLink base_path node =
     case node.id of
         Id id ->
-            a [ href <| base_path ++ id ++ "/" ] [ text node.name ]
+            a [ href <| base_path ++ "/" ++ id ] [ text node.name ]
 
 
 displayNamedNodeList : String -> List NamedNodeData -> Html msg
@@ -244,18 +300,15 @@ displayInList displayFunction list =
 
 displayUser : UserDetailData -> Html msg
 displayUser user =
-    div []
-        [ dl []
-            [ dt [] [ text "Name" ]
-            , dd [] [ displayNamedNodeLink "/user/" user.node ]
-            , dt [] [ text "Created" ]
-            , dd [] [ text <| fromTime user.created ]
-            , dt [] [ text <| "Groups (" ++ String.fromInt (List.length user.groups) ++ ")" ]
-            , dd [] [ displayNamedNodeList "/group/" user.groups ]
-            , dt [] [ text <| "Cases (" ++ String.fromInt (List.length user.cases) ++ ")" ]
-            , dd [] [ displayNamedNodeList "/case/" user.cases ]
-            ]
-        , viewLink "new/"
+    dl []
+        [ dt [] [ text "Name" ]
+        , dd [] [ displayNamedNodeLink "/user/" user.node ]
+        , dt [] [ text "Created" ]
+        , dd [] [ text <| fromTime user.created ]
+        , dt [] [ text <| "Groups (" ++ String.fromInt (List.length user.groups) ++ ")" ]
+        , dd [] [ displayNamedNodeList "/group" user.groups ]
+        , dt [] [ text <| "Cases (" ++ String.fromInt (List.length user.cases) ++ ")" ]
+        , dd [] [ displayNamedNodeList "/case" user.cases ]
         ]
 
 
@@ -263,11 +316,11 @@ displayGroup : GroupDetailData -> Html msg
 displayGroup group =
     dl []
         [ dt [] [ text "Name" ]
-        , dd [] [ displayNamedNodeLink "/group/" group.node ]
+        , dd [] [ displayNamedNodeLink "/group" group.node ]
         , dt [] [ text <| "Members (" ++ String.fromInt (List.length group.members) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/user/" group.members ]
+        , dd [] [ displayNamedNodeList "/user" group.members ]
         , dt [] [ text <| "Cases (" ++ String.fromInt (List.length group.cases) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/case/" group.cases ]
+        , dd [] [ displayNamedNodeList "/case" group.cases ]
         ]
 
 
@@ -534,11 +587,11 @@ displayDebug data =
             text "..."
 
 
-displayOption : (NamedNodeData -> Bool) -> NamedNodeData -> Html Msg
+displayOption : (Id -> Bool) -> NamedNodeData -> Html Msg
 displayOption isSelected node =
     case node.id of
         Id id ->
-            option [ value id, selected <| isSelected node ] [ text node.name ]
+            option [ value id, selected <| isSelected node.id ] [ text node.name ]
 
 
 caseGroupChanged : CaseData -> String -> Msg
@@ -554,9 +607,9 @@ caseGroupChanged caseData groupId =
         }
 
 
-determineSelected : Maybe Id -> NamedNodeData -> Bool
-determineSelected selectedId node =
-    selectedId == Just node.id
+determineSelected : Maybe Id -> Id -> Bool
+determineSelected selectedId id =
+    selectedId == Just id
 
 
 displayGroupSelect : CaseData -> GroupListResponse -> Html Msg
@@ -594,7 +647,7 @@ type Route
     | Groups
     | Group Id
     | Case Id
-    | New Id
+    | New
 
 
 routeParser : Parser (Route -> a) a
@@ -602,10 +655,10 @@ routeParser =
     oneOf
         [ map Users <| s "users"
         , map (User << Id) <| s "user" </> string
-        , map (New << Id) <| s "user" </> string </> s "new"
         , map Groups <| s "groups"
         , map (Group << Id) <| s "group" </> string
         , map (Case << Id) <| s "case" </> string
+        , map New <| s "new"
         ]
 
 
@@ -639,23 +692,29 @@ parseUrlAndRequest model url =
                     , id |> caseDetailQuery |> makeRequest (CaseDetail >> GotResponse)
                     )
 
-                New userId ->
-                    let
-                        withUserId args =
-                            { args | userId = Present userId }
+                New ->
+                    case model.auth of
+                        Just a ->
+                            let
+                                withUserId args =
+                                    { args | userId = Present a.currentUserId }
 
-                        createCaseData groupList =
-                            CaseData
-                                userId
-                                groupList
-                                Nothing
-                                (validateReference "")
-                                [ blankPrediction ]
-                                (validateDeadline "")
-                    in
-                    ( { model | state = NoData }
-                    , groupListQuery withUserId |> makeRequest (createCaseData >> ChangeCase)
-                    )
+                                createCaseData groupList =
+                                    CaseData
+                                        groupList
+                                        Nothing
+                                        (validateReference "")
+                                        [ blankPrediction ]
+                                        (validateDeadline "")
+                            in
+                            ( { model | state = NoData }
+                            , groupListQuery withUserId |> makeRequest (createCaseData >> ChangeCase)
+                            )
+
+                        Nothing ->
+                            ( { model | state = NoData }
+                            , Cmd.none
+                            )
 
         Nothing ->
             ( { model | state = NoData }
@@ -699,7 +758,7 @@ prepareCaseInput caseData =
                         Just <|
                             CaseInput
                                 reference
-                                caseData.creatorId
+                                (Id "")
                                 (case caseData.groupId of
                                     Just id ->
                                         Present id
