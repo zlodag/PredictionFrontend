@@ -7,7 +7,7 @@ import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, viewData)
-import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, h4, input, label, li, option, p, select, span, strong, text, ul)
+import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, h4, hr, input, label, li, option, p, select, span, strong, text, ul)
 import Html.Attributes exposing (disabled, href, required, selected, step, style, type_, value)
 import Html.Events exposing (onClick, onInput)
 import Iso8601 exposing (fromTime)
@@ -28,7 +28,7 @@ import ScalarCodecs exposing (Id, Timestamp)
 import String
 import Time
 import Url
-import Url.Parser exposing ((</>), Parser, map, oneOf, s, string)
+import Url.Parser exposing ((</>), Parser, map, oneOf, s, string, top)
 
 
 
@@ -71,8 +71,7 @@ type FormField a
 
 
 type alias CaseData =
-    { userGroups : GraphqlRemoteData GroupListResponse
-    , groupId : Maybe Id
+    { groupId : Maybe Id
     , reference : FormField String
     , predictions : List PredictionData
     , deadline : FormField Timestamp
@@ -80,7 +79,7 @@ type alias CaseData =
 
 
 type State
-    = UserList (GraphqlRemoteData UserListResponse)
+    = WelcomePage
     | UserDetail (GraphqlRemoteData UserDetailResponse)
     | GroupList (GraphqlRemoteData GroupListResponse)
     | GroupDetail (GraphqlRemoteData GroupDetailResponse)
@@ -92,36 +91,34 @@ type State
 type alias Model =
     { key : Nav.Key
     , state : State
-    , auth : Maybe Auth
+    , auth : Auth
     }
 
 
-type alias Auth =
-    { allUsers : List NamedNodeData
-    , currentUserId : Id
-    }
+type Auth
+    = SignedIn (List UserCandidate) UserCandidate
+    | SignedOut (List UserCandidate)
 
 
 usersResponseHandler : Url.Url -> GraphqlRemoteData UserListResponse -> Msg
 usersResponseHandler url response =
-    GotAuth url
-        (case response of
+    GotAuth url <|
+        case response of
             Success users ->
                 case List.head users of
                     Just a ->
-                        Just <| Auth users a.id
+                        SignedIn users a
 
                     Nothing ->
-                        Nothing
+                        SignedOut users
 
             _ ->
-                Nothing
-        )
+                SignedOut []
 
 
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
 init _ url key =
-    ( Model key NoData Nothing
+    ( Model key NoData <| SignedOut []
     , userListQuery |> makeRequest (usersResponseHandler url)
     )
 
@@ -134,7 +131,7 @@ init _ url key =
 type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
-    | GotAuth Url.Url (Maybe Auth)
+    | GotAuth Url.Url Auth
     | UserChanged Auth
     | GotResponse State
     | ChangeCase CaseData
@@ -170,8 +167,8 @@ update msg model =
             parseUrlAndRequest { model | auth = auth } url
 
         UserChanged auth ->
-            ( { model | auth = Just auth }
-            , Cmd.none
+            ( { model | auth = auth, state = NoData }
+            , Nav.pushUrl model.key "/"
             )
 
         GotResponse graphqlRemoteData ->
@@ -194,10 +191,10 @@ update msg model =
 
         SubmitCase caseData ->
             case model.auth of
-                Just a ->
-                    ( model, submitCase { caseData | creatorId = a.currentUserId } )
+                SignedIn _ currentUser ->
+                    ( model, submitCase { caseData | creatorId = currentUser.id } )
 
-                Nothing ->
+                SignedOut _ ->
                     ( model, Cmd.none )
 
         SubmitComment caseDetail creatorId string ->
@@ -248,33 +245,77 @@ view model =
     { title = "Predictions"
     , body =
         [ displayAuth model.auth
-        , ul []
-            [ li [] [ a [ href "/graphql" ] [ text "GraphiQL" ] ]
-            , viewLink "/users"
-            , viewLink "/groups"
-            , viewLink "/new"
+        , ul [] <|
+            [ li [] [ a [ href "/" ] [ text "Home" ] ]
+            , li [] [ a [ href "/graphql" ] [ text "GraphiQL" ] ]
             ]
+                ++ (case model.auth of
+                        SignedIn _ userCandidate ->
+                            case userCandidate.id of
+                                Id userId ->
+                                    [ li [] [ a [ href <| "/user/" ++ userId ] [ text "My user page" ] ]
+                                    , li [] [ a [ href "/new" ] [ text "New prediction" ] ]
+                                    ]
+
+                        SignedOut _ ->
+                            []
+                   )
+        , hr [] []
         , displayData model
         ]
     }
 
 
-viewLink : String -> Html msg
-viewLink path =
-    li [] [ a [ href path ] [ text path ] ]
+determineNewAuth : Auth -> String -> Auth
+determineNewAuth auth id =
+    let
+        users =
+            case auth of
+                SignedIn a _ ->
+                    a
+
+                SignedOut a ->
+                    a
+    in
+    if String.isEmpty id then
+        SignedOut users
+
+    else
+        case List.filter (\user -> user.id == Id id) users of
+            [ newUser ] ->
+                SignedIn users newUser
+
+            _ ->
+                SignedOut users
 
 
-displayAuth : Maybe Auth -> Html Msg
+displayAuth : Auth -> Html Msg
 displayAuth auth =
-    case auth of
-        Just a ->
-            div []
-                [ label [] [ text "Select current user: " ]
-                , select [ onInput <| Id >> Auth a.allUsers >> UserChanged ] <| List.map ((==) a.currentUserId |> displayOption) a.allUsers
-                ]
+    div []
+        [ label [] [ text "Select current user: " ]
+        , select [ onInput <| determineNewAuth auth >> UserChanged ] <|
+            List.map
+                (determineSelected
+                    (case auth of
+                        SignedIn _ currentUser ->
+                            Just currentUser.id
 
-        Nothing ->
-            text "No users found"
+                        SignedOut _ ->
+                            Nothing
+                    )
+                    |> displayOption
+                )
+            <|
+                NamedNodeData (Id "") "<No user>"
+                    :: List.map (\user -> NamedNodeData user.id user.name)
+                        (case auth of
+                            SignedIn users _ ->
+                                users
+
+                            SignedOut users ->
+                                users
+                        )
+        ]
 
 
 displayMaybe : (a -> Html msg) -> Maybe a -> Html msg
@@ -290,11 +331,11 @@ displayMaybe displayFunction data =
 displayData : Model -> Html Msg
 displayData model =
     case model.state of
+        WelcomePage ->
+            text <| welcomeMessage model.auth
+
         NoData ->
             text "No data!"
-
-        UserList graphqlRemoteData ->
-            viewData (displayNamedNodeList "/user") graphqlRemoteData
 
         UserDetail graphqlRemoteData ->
             viewData (displayMaybe displayUser) graphqlRemoteData
@@ -309,7 +350,22 @@ displayData model =
             viewData (displayMaybe <| displayCase model.auth) graphqlRemoteData
 
         NewCase caseData ->
-            displayNewForm caseData
+            case model.auth of
+                SignedIn _ currentUser ->
+                    displayNewForm currentUser.groups caseData
+
+                _ ->
+                    text "Sign in first"
+
+
+welcomeMessage : Auth -> String
+welcomeMessage auth =
+    case auth of
+        SignedIn _ userCandidate ->
+            "Welcome, " ++ userCandidate.name
+
+        SignedOut _ ->
+            "Please sign in to begin"
 
 
 displayNamedNodeLink : String -> NamedNodeData -> Html msg
@@ -355,7 +411,7 @@ displayGroup group =
         ]
 
 
-displayCase : Maybe Auth -> CaseDetailData -> Html Msg
+displayCase : Auth -> CaseDetailData -> Html Msg
 displayCase auth case_ =
     dl []
         [ dt [] [ text "Reference" ]
@@ -380,10 +436,10 @@ displayCase auth case_ =
             [ ul [] <|
                 displayListItems displayComment case_.comments
                     ++ (case auth of
-                            Just a ->
-                                [ li [] <| displayNewComment a.currentUserId case_ ]
+                            SignedIn _ currentUser ->
+                                [ li [] <| displayNewComment currentUser.id case_ ]
 
-                            Nothing ->
+                            SignedOut _ ->
                                 []
                        )
             ]
@@ -671,24 +727,23 @@ determineSelected selectedId id =
     selectedId == Just id
 
 
-displayGroupSelect : CaseData -> GroupListResponse -> Html Msg
-displayGroupSelect caseData groups =
+displayGroupSelect : GroupListResponse -> CaseData -> Html Msg
+displayGroupSelect groups caseData =
     div []
         [ label [] [ text "Group: " ]
         , select [ onInput <| caseGroupChanged caseData ] <|
             option [ value "", selected False ] [ text "<Private>" ]
-                --option [ value "", selected (caseData.groupId == Nothing) ] [ text "<Private>" ]
                 :: List.map (determineSelected caseData.groupId |> displayOption) groups
         ]
 
 
-displayNewForm : CaseData -> Html Msg
-displayNewForm caseData =
+displayNewForm : GroupListResponse -> CaseData -> Html Msg
+displayNewForm userGroups caseData =
     div [] <|
         fieldset []
             [ div [] [ label [] [ text "Case reference: " ], input [ required True, value <| getInputValue caseData.reference, onInput (caseReferenceChanged caseData) ] [], displayValidity caseData.reference ]
             , div [] [ label [] [ text "Deadline: " ], input [ required True, type_ "datetime-local", value <| getInputValue caseData.deadline, onInput (caseDeadlineChanged caseData) ] [], displayValidity caseData.deadline ]
-            , viewData (displayGroupSelect caseData) caseData.userGroups
+            , displayGroupSelect userGroups caseData
             ]
             :: List.indexedMap (displayPrediction caseData) caseData.predictions
             ++ [ fieldset [] [ button [ onClick (addNewLine caseData) ] [ text "➕" ] ]
@@ -701,7 +756,7 @@ displayNewForm caseData =
 
 
 type Route
-    = Users
+    = Welcome
     | User Id
     | Groups
     | Group Id
@@ -712,7 +767,7 @@ type Route
 routeParser : Parser (Route -> a) a
 routeParser =
     oneOf
-        [ map Users <| s "users"
+        [ map Welcome top
         , map (User << Id) <| s "user" </> string
         , map Groups <| s "groups"
         , map (Group << Id) <| s "group" </> string
@@ -726,10 +781,8 @@ parseUrlAndRequest model url =
     case Url.Parser.parse routeParser url of
         Just route ->
             case route of
-                Users ->
-                    ( { model | state = UserList RemoteData.Loading }
-                    , userListQuery |> makeRequest (UserList >> GotResponse)
-                    )
+                Welcome ->
+                    ( { model | state = WelcomePage }, Cmd.none )
 
                 User id ->
                     ( { model | state = UserDetail RemoteData.Loading }
@@ -753,24 +806,20 @@ parseUrlAndRequest model url =
 
                 New ->
                     case model.auth of
-                        Just a ->
-                            let
-                                withUserId args =
-                                    { args | userId = Present a.currentUserId }
-
-                                createCaseData groupList =
-                                    CaseData
-                                        groupList
-                                        Nothing
-                                        (validateReference "")
-                                        [ blankPrediction ]
-                                        (validateDeadline "")
-                            in
-                            ( { model | state = NoData }
-                            , groupListQuery withUserId |> makeRequest (createCaseData >> ChangeCase)
+                        SignedIn _ _ ->
+                            ( { model
+                                | state =
+                                    NewCase <|
+                                        CaseData
+                                            Nothing
+                                            (validateReference "")
+                                            [ blankPrediction ]
+                                            (validateDeadline "")
+                              }
+                            , Cmd.none
                             )
 
-                        Nothing ->
+                        SignedOut _ ->
                             ( { model | state = NoData }
                             , Cmd.none
                             )
@@ -861,6 +910,13 @@ type alias NamedNodeData =
     }
 
 
+type alias UserCandidate =
+    { id : Id
+    , name : String
+    , groups : List NamedNodeData
+    }
+
+
 type alias UserDetailData =
     { node : NamedNodeData
     , created : Timestamp
@@ -887,12 +943,16 @@ userDetailQuery id =
 
 
 type alias UserListResponse =
-    List NamedNodeData
+    List UserCandidate
 
 
 userListQuery : SelectionSet UserListResponse RootQuery
 userListQuery =
-    Query.users <| SelectionSet.map2 NamedNodeData User.id User.name
+    Query.users <|
+        SelectionSet.map3 UserCandidate
+            User.id
+            User.name
+            (User.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name)
 
 
 type alias GroupDetailData =
