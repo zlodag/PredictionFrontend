@@ -333,7 +333,7 @@ displayUser : UserDetailData -> Html msg
 displayUser user =
     dl []
         [ dt [] [ text "Name" ]
-        , dd [] [ displayNamedNodeLink "/user/" user.node ]
+        , dd [] [ displayNamedNodeLink "/user" user.node ]
         , dt [] [ text "Created" ]
         , dd [] [ text <| fromTime user.created ]
         , dt [] [ text <| "Groups (" ++ String.fromInt (List.length user.groups) ++ ")" ]
@@ -359,16 +359,16 @@ displayCase : Maybe Auth -> CaseDetailData -> Html Msg
 displayCase auth case_ =
     dl []
         [ dt [] [ text "Reference" ]
-        , dd [] [ displayNamedNodeLink "/case/" case_.node ]
+        , dd [] [ displayNamedNodeLink "/case" case_.node ]
         , dt [] [ text "Deadline" ]
         , dd [] [ text <| fromTime case_.deadline ]
         , dt [] [ text "Creator" ]
-        , dd [] [ displayNamedNodeLink "/user/" case_.creator ]
+        , dd [] [ displayNamedNodeLink "/user" case_.creator ]
         , dt [] [ text "Group" ]
         , dd []
             [ case case_.group of
                 Just group ->
-                    displayNamedNodeLink "/group/" group
+                    displayNamedNodeLink "/group" group
 
                 Nothing ->
                     text "None"
@@ -418,14 +418,14 @@ displayNewComment currentUserId caseDetail =
 
 displayComment : CommentData -> List (Html msg)
 displayComment comment =
-    [ span [] [ displayNamedNodeLink "/user/" comment.creator, text <| " at " ++ fromTime comment.timestamp ]
+    [ span [] [ displayNamedNodeLink "/user" comment.creator, text <| " at " ++ fromTime comment.timestamp ]
     , blockquote [] [ text comment.text ]
     ]
 
 
 displayWager : WagerData -> List (Html msg)
 displayWager wager =
-    [ displayNamedNodeLink "/user/" wager.creator
+    [ displayNamedNodeLink "/user" wager.creator
     , text " estimated "
     , b [] [ text <| String.fromInt wager.confidence ++ "%" ]
     , text <| " at " ++ fromTime wager.timestamp
@@ -440,7 +440,7 @@ displayJudgement judgement =
                 [ text " Judged as "
                 , strong [] [ displayOutcome judged.outcome ]
                 , text " by "
-                , displayNamedNodeLink "/user/" judged.judgedBy
+                , displayNamedNodeLink "/user" judged.judgedBy
                 , text <| " at " ++ fromTime judged.timestamp ++ ")"
                 ]
 
