@@ -134,9 +134,10 @@ type Msg
     | GotAuth Url.Url Auth
     | UserChanged Auth
     | GotResponse State
-    | ChangeCase CaseData
+    | ModifyNewCase CaseData
     | SubmitCase CaseInput
     | SubmitComment CaseDetailData Id String
+    | SubmitNewGroup CaseDetailData (Maybe Id)
     | CaseCreated (GraphqlRemoteData Id)
 
 
@@ -176,7 +177,7 @@ update msg model =
             , Cmd.none
             )
 
-        ChangeCase caseData ->
+        ModifyNewCase caseData ->
             ( { model | state = NewCase caseData }
             , Cmd.none
             )
@@ -224,6 +225,51 @@ update msg model =
                 |> Mutation.addComment (Mutation.AddCommentRequiredArguments creatorId caseDetail.node.id string)
                 |> Graphql.Http.mutationRequest graphQlEndpoint
                 |> Graphql.Http.send (RemoteData.fromResult >> alterCase)
+            )
+
+        SubmitNewGroup caseDetail groupId ->
+            let
+                newGroupId =
+                    case groupId of
+                        Just id ->
+                            Present id
+
+                        Nothing ->
+                            Null
+
+                alterGroup : GraphqlRemoteData (Maybe NamedNodeData) -> Msg
+                alterGroup newGroupResult =
+                    GotResponse
+                        << CaseDetail
+                        << Success
+                    <|
+                        Just
+                            (case newGroupResult of
+                                Success newGroup ->
+                                    { caseDetail
+                                        | ownerGroup =
+                                            case caseDetail.ownerGroup of
+                                                NotOwner owner _ ->
+                                                    NotOwner owner newGroup
+
+                                                OwnerViewing owner _ userGroups ->
+                                                    OwnerViewing owner newGroup userGroups
+
+                                                OwnerEditing owner _ userGroups ->
+                                                    OwnerViewing owner newGroup userGroups
+                                    }
+
+                                _ ->
+                                    caseDetail
+                            )
+            in
+            ( model
+            , Mutation.changeGroup
+                (\args -> { args | newGroupId = newGroupId })
+                (Mutation.ChangeGroupRequiredArguments caseDetail.node.id)
+                (SelectionSet.map2 NamedNodeData Group.id Group.name)
+                |> Graphql.Http.mutationRequest graphQlEndpoint
+                |> Graphql.Http.send (RemoteData.fromResult >> alterGroup)
             )
 
 
@@ -277,16 +323,12 @@ determineNewAuth auth id =
                 SignedOut a ->
                     a
     in
-    if String.isEmpty id then
-        SignedOut users
+    case List.filter (\user -> user.id == Id id) users of
+        [ newUser ] ->
+            SignedIn users newUser
 
-    else
-        case List.filter (\user -> user.id == Id id) users of
-            [ newUser ] ->
-                SignedIn users newUser
-
-            _ ->
-                SignedOut users
+        _ ->
+            SignedOut users
 
 
 displayAuth : Auth -> Html Msg
@@ -411,24 +453,66 @@ displayGroup group =
         ]
 
 
+ownerGroupChanged : CaseDetailData -> CaseOwnerGroup -> Msg
+ownerGroupChanged caseDetail ownerGroup =
+    { caseDetail | ownerGroup = ownerGroup } |> Just >> Success >> CaseDetail >> GotResponse
+
+
+displayCaseGroup : CaseDetailData -> List (Html Msg)
+displayCaseGroup caseDetail =
+    let
+        viewGroup group =
+            case group of
+                Just g ->
+                    displayNamedNodeLink "/group" g
+
+                Nothing ->
+                    text "None"
+    in
+    [ case caseDetail.ownerGroup of
+        NotOwner _ g ->
+            viewGroup g
+
+        OwnerViewing owner group groups ->
+            div [] [ viewGroup group, button [ onClick <| ownerGroupChanged caseDetail <| OwnerEditing owner group groups ] [ text "Change" ] ]
+
+        OwnerEditing _ group groups ->
+            SubmitNewGroup caseDetail
+                |> displayGroupSelect
+                    (case group of
+                        Just g ->
+                            Just g.id
+
+                        Nothing ->
+                            Nothing
+                    )
+                    groups
+    ]
+
+
 displayCase : Auth -> CaseDetailData -> Html Msg
 displayCase auth case_ =
+    let
+        owner =
+            case case_.ownerGroup of
+                NotOwner a _ ->
+                    a
+
+                OwnerViewing a _ _ ->
+                    a
+
+                OwnerEditing a _ _ ->
+                    a
+    in
     dl []
         [ dt [] [ text "Reference" ]
         , dd [] [ displayNamedNodeLink "/case" case_.node ]
         , dt [] [ text "Deadline" ]
         , dd [] [ text <| fromTime case_.deadline ]
         , dt [] [ text "Creator" ]
-        , dd [] [ displayNamedNodeLink "/user" case_.creator ]
+        , dd [] [ displayNamedNodeLink "/user" owner ]
         , dt [] [ text "Group" ]
-        , dd []
-            [ case case_.group of
-                Just group ->
-                    displayNamedNodeLink "/group" group
-
-                Nothing ->
-                    text "None"
-            ]
+        , dd [] <| displayCaseGroup case_
         , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length case_.diagnoses) ++ ")" ]
         , dd [] [ ul [] <| displayListItems displayDiagnosis case_.diagnoses ]
         , dt [] [ text <| "Comments (" ++ String.fromInt (List.length case_.comments) ++ ")" ]
@@ -540,7 +624,7 @@ validateNonEmptyField fieldName inputValue =
 
 caseReferenceChanged : CaseData -> String -> Msg
 caseReferenceChanged caseData reference =
-    ChangeCase { caseData | reference = validateReference reference }
+    ModifyNewCase { caseData | reference = validateReference reference }
 
 
 validateDeadline : InputValue -> FormField Time.Posix
@@ -557,7 +641,7 @@ validateDeadline deadline =
 
 caseDeadlineChanged : CaseData -> String -> Msg
 caseDeadlineChanged caseData deadline =
-    ChangeCase { caseData | deadline = validateDeadline deadline }
+    ModifyNewCase { caseData | deadline = validateDeadline deadline }
 
 
 blankPrediction =
@@ -566,12 +650,12 @@ blankPrediction =
 
 addNewLine : CaseData -> Msg
 addNewLine caseData =
-    ChangeCase { caseData | predictions = caseData.predictions ++ [ blankPrediction ] }
+    ModifyNewCase { caseData | predictions = caseData.predictions ++ [ blankPrediction ] }
 
 
 changePrediction : Int -> PredictionData -> CaseData -> Msg
 changePrediction index newPrediction caseData =
-    ChangeCase { caseData | predictions = List.take index caseData.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseData.predictions }
+    ModifyNewCase { caseData | predictions = List.take index caseData.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseData.predictions }
 
 
 validateDiagnosis =
@@ -613,7 +697,7 @@ confidenceChanged index oldPrediction caseData confidence =
 
 removePrediction : Int -> CaseData -> Msg
 removePrediction index caseData =
-    ChangeCase { caseData | predictions = List.take index caseData.predictions ++ List.drop (index + 1) caseData.predictions }
+    ModifyNewCase { caseData | predictions = List.take index caseData.predictions ++ List.drop (index + 1) caseData.predictions }
 
 
 displayPrediction : CaseData -> Int -> PredictionData -> Html Msg
@@ -713,17 +797,9 @@ displayOption isSelected node =
             option [ value id, selected <| isSelected node.id ] [ text node.name ]
 
 
-caseGroupChanged : CaseData -> String -> Msg
+caseGroupChanged : CaseData -> Maybe Id -> Msg
 caseGroupChanged caseData groupId =
-    ChangeCase
-        { caseData
-            | groupId =
-                if String.isEmpty groupId then
-                    Nothing
-
-                else
-                    Just <| Id groupId
-        }
+    ModifyNewCase { caseData | groupId = groupId }
 
 
 determineSelected : Maybe Id -> Id -> Bool
@@ -731,14 +807,21 @@ determineSelected selectedId id =
     selectedId == Just id
 
 
-displayGroupSelect : GroupListResponse -> CaseData -> Html Msg
-displayGroupSelect groups caseData =
-    div []
-        [ label [] [ text "Group: " ]
-        , select [ onInput <| caseGroupChanged caseData ] <|
-            option [ value "", selected False ] [ text "<Private>" ]
-                :: List.map (determineSelected caseData.groupId |> displayOption) groups
-        ]
+displayGroupSelect : Maybe Id -> GroupListResponse -> (Maybe Id -> Msg) -> Html Msg
+displayGroupSelect currentGroupId groups msgFn =
+    let
+        getNewGroupId string =
+            case List.filter (\group -> group.id == Id string) groups of
+                [ newGroup ] ->
+                    Just newGroup.id
+
+                _ ->
+                    Nothing
+    in
+    select [ onInput <| msgFn << getNewGroupId ] <|
+        List.map (determineSelected currentGroupId |> displayOption) <|
+            NamedNodeData (Id "") "None"
+                :: groups
 
 
 displayNewForm : GroupListResponse -> CaseData -> Html Msg
@@ -747,7 +830,7 @@ displayNewForm userGroups caseData =
         fieldset []
             [ div [] [ label [] [ text "Case reference: " ], input [ required True, value <| getInputValue caseData.reference, onInput (caseReferenceChanged caseData) ] [], displayValidity caseData.reference ]
             , div [] [ label [] [ text "Deadline: " ], input [ required True, type_ "datetime-local", value <| getInputValue caseData.deadline, onInput (caseDeadlineChanged caseData) ] [], displayValidity caseData.deadline ]
-            , displayGroupSelect userGroups caseData
+            , div [] [ label [] [ text "Group: " ], displayGroupSelect caseData.groupId userGroups <| caseGroupChanged caseData ]
             ]
             :: List.indexedMap (displayPrediction caseData) caseData.predictions
             ++ [ fieldset [] [ button [ onClick (addNewLine caseData) ] [ text "➕" ] ]
@@ -805,7 +888,7 @@ parseUrlAndRequest model url =
 
                 Case id ->
                     ( { model | state = GroupDetail RemoteData.Loading }
-                    , id |> caseDetailQuery |> makeRequest (CaseDetail >> GotResponse)
+                    , id |> caseDetailQuery model.auth |> makeRequest (CaseDetail >> GotResponse)
                     )
 
                 New ->
@@ -1009,22 +1092,43 @@ mapToCommentData =
         Comment.text
 
 
+type CaseOwnerGroup
+    = NotOwner NamedNodeData (Maybe NamedNodeData)
+    | OwnerViewing NamedNodeData (Maybe NamedNodeData) (List NamedNodeData)
+    | OwnerEditing NamedNodeData (Maybe NamedNodeData) (List NamedNodeData)
+
+
 type alias CaseDetailData =
     { newComment : Maybe String
     , node : NamedNodeData
-    , creator : NamedNodeData
-    , group : Maybe NamedNodeData
+    , ownerGroup : CaseOwnerGroup
     , deadline : Timestamp
     , diagnoses : List DiagnosisDetailData
     , comments : List CommentData
     }
 
 
-mapToCaseDetailData =
-    SelectionSet.map6 (CaseDetailData Nothing)
+mapToCaseDetailData auth =
+    let
+        ownerGroupResolver : NamedNodeData -> Maybe NamedNodeData -> CaseOwnerGroup
+        ownerGroupResolver owner group =
+            case auth of
+                SignedOut _ ->
+                    NotOwner owner group
+
+                SignedIn _ user ->
+                    if user.id /= owner.id then
+                        NotOwner owner group
+
+                    else
+                        OwnerViewing owner group user.groups
+    in
+    SelectionSet.map5 (CaseDetailData Nothing)
         (SelectionSet.map2 NamedNodeData Case.id Case.reference)
-        (Case.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
-        (Case.group <| SelectionSet.map2 NamedNodeData Group.id Group.name)
+        (SelectionSet.map2 ownerGroupResolver
+            (Case.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
+            (Case.group <| SelectionSet.map2 NamedNodeData Group.id Group.name)
+        )
         Case.deadline
         (Case.diagnoses <| mapToDiagnosisDetailData)
         (Case.comments <| mapToCommentData)
@@ -1034,9 +1138,9 @@ type alias CaseDetailResponse =
     Maybe CaseDetailData
 
 
-caseDetailQuery : Id -> SelectionSet CaseDetailResponse RootQuery
-caseDetailQuery id =
-    Query.case_ { id = id } <| mapToCaseDetailData
+caseDetailQuery : Auth -> Id -> SelectionSet CaseDetailResponse RootQuery
+caseDetailQuery auth id =
+    Query.case_ { id = id } <| mapToCaseDetailData auth
 
 
 type alias DiagnosisLimitedData =
