@@ -7,9 +7,9 @@ import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, viewData)
-import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, h4, hr, input, label, li, option, p, select, span, strong, text, ul)
-import Html.Attributes exposing (disabled, href, required, selected, step, style, type_, value)
-import Html.Events exposing (onClick, onInput)
+import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, form, h4, hr, input, label, li, option, p, select, span, strong, text, ul)
+import Html.Attributes exposing (disabled, href, placeholder, required, selected, step, style, type_, value)
+import Html.Events exposing (onClick, onInput, onSubmit)
 import Iso8601 exposing (fromTime)
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.InputObject exposing (CaseInput, PredictionInput)
@@ -437,7 +437,7 @@ displayCase auth case_ =
                 displayListItems displayComment case_.comments
                     ++ (case auth of
                             SignedIn _ currentUser ->
-                                [ li [] <| displayNewComment currentUser.id case_ ]
+                                [ li [] <| displayNewComment currentUser case_ ]
 
                             SignedOut _ ->
                                 []
@@ -459,13 +459,17 @@ commentChanged caseDetail newComment =
     { caseDetail | newComment = Just newComment } |> Just >> Success >> CaseDetail >> GotResponse
 
 
-displayNewComment : Id -> CaseDetailData -> List (Html Msg)
-displayNewComment currentUserId caseDetail =
+displayNewComment : UserCandidate -> CaseDetailData -> List (Html Msg)
+displayNewComment currentUser caseDetail =
     case caseDetail.newComment of
         Just string ->
-            [ label [] [ text "New comment: " ]
-            , input [ type_ "text", onInput <| commentChanged caseDetail ] [ text string ]
-            , button [ onClick <| SubmitComment caseDetail currentUserId string ] [ text "Add" ]
+            [ displayNamedNodeLink "/user" <| NamedNodeData currentUser.id currentUser.name
+            , blockquote []
+                [ form [ onSubmit <| SubmitComment caseDetail currentUser.id string ]
+                    [ input [ type_ "text", placeholder "Enter comment", onInput <| commentChanged caseDetail ] [ text string ]
+                    , input [ type_ "submit", disabled << String.isEmpty << String.trim <| string ] []
+                    ]
+                ]
             ]
 
         Nothing ->
