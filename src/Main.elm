@@ -7,7 +7,7 @@ import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, viewData)
-import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, form, h4, hr, input, label, li, option, p, select, span, strong, text, ul)
+import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, form, h4, hr, input, label, li, option, select, span, strong, text, ul)
 import Html.Attributes exposing (disabled, href, placeholder, required, selected, step, style, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
 import Iso8601 exposing (fromTime)
@@ -134,10 +134,11 @@ type Msg
     | GotAuth Url.Url Auth
     | UserChanged Auth
     | GotResponse State
-    | ModifyNewCase CaseData
+    | ChangeNewCase CaseData
     | SubmitCase CaseInput
     | SubmitComment CaseDetailData Id String
     | SubmitNewGroup CaseDetailData (Maybe Id)
+    | SubmitNewWager CaseDetailData Id Int
     | CaseCreated (GraphqlRemoteData Id)
 
 
@@ -177,7 +178,7 @@ update msg model =
             , Cmd.none
             )
 
-        ModifyNewCase caseData ->
+        ChangeNewCase caseData ->
             ( { model | state = NewCase caseData }
             , Cmd.none
             )
@@ -242,26 +243,25 @@ update msg model =
                     GotResponse
                         << CaseDetail
                         << Success
+                        << Just
                     <|
-                        Just
-                            (case newGroupResult of
-                                Success newGroup ->
-                                    { caseDetail
-                                        | ownerGroup =
-                                            case caseDetail.ownerGroup of
-                                                NotOwner owner _ ->
-                                                    NotOwner owner newGroup
+                        case newGroupResult of
+                            Success newGroup ->
+                                { caseDetail
+                                    | ownerGroup =
+                                        case caseDetail.ownerGroup of
+                                            NotOwner owner _ ->
+                                                NotOwner owner newGroup
 
-                                                OwnerViewing owner _ userGroups ->
-                                                    OwnerViewing owner newGroup userGroups
+                                            OwnerViewing owner _ userGroups ->
+                                                OwnerViewing owner newGroup userGroups
 
-                                                OwnerEditing owner _ userGroups ->
-                                                    OwnerViewing owner newGroup userGroups
-                                    }
+                                            OwnerEditing owner _ userGroups ->
+                                                OwnerViewing owner newGroup userGroups
+                                }
 
-                                _ ->
-                                    caseDetail
-                            )
+                            _ ->
+                                caseDetail
             in
             ( model
             , Mutation.changeGroup
@@ -270,6 +270,52 @@ update msg model =
                 (SelectionSet.map2 NamedNodeData Group.id Group.name)
                 |> Graphql.Http.mutationRequest graphQlEndpoint
                 |> Graphql.Http.send (RemoteData.fromResult >> alterGroup)
+            )
+
+        SubmitNewWager caseDetail diagnosisId confidence ->
+            let
+                filterDiagnoses : WagerData -> DiagnosisDetailData -> DiagnosisDetailData
+                filterDiagnoses newWager old =
+                    if old.node.id == diagnosisId then
+                        { old
+                            | wagers = old.wagers ++ [ newWager ]
+                            , judgement =
+                                case old.judgement of
+                                    NotJudged (Just _) ->
+                                        NotJudged Nothing
+
+                                    _ ->
+                                        old.judgement
+                        }
+
+                    else
+                        old
+
+                alterCase : GraphqlRemoteData WagerData -> Msg
+                alterCase newWagerResult =
+                    GotResponse
+                        << CaseDetail
+                        << Success
+                        << Just
+                    <|
+                        case newWagerResult of
+                            Success newWager ->
+                                { caseDetail | diagnoses = List.map (filterDiagnoses newWager) caseDetail.diagnoses }
+
+                            _ ->
+                                caseDetail
+            in
+            ( model
+            , case model.auth of
+                SignedIn _ user ->
+                    Mutation.addWager
+                        (Mutation.AddWagerRequiredArguments user.id diagnosisId confidence)
+                        mapToWagerData
+                        |> Graphql.Http.mutationRequest graphQlEndpoint
+                        |> Graphql.Http.send (RemoteData.fromResult >> alterCase)
+
+                _ ->
+                    Cmd.none
             )
 
 
@@ -453,11 +499,6 @@ displayGroup group =
         ]
 
 
-ownerGroupChanged : CaseDetailData -> CaseOwnerGroup -> Msg
-ownerGroupChanged caseDetail ownerGroup =
-    { caseDetail | ownerGroup = ownerGroup } |> Just >> Success >> CaseDetail >> GotResponse
-
-
 displayCaseGroup : CaseDetailData -> List (Html Msg)
 displayCaseGroup caseDetail =
     let
@@ -475,55 +516,58 @@ displayCaseGroup caseDetail =
 
         OwnerViewing owner group groups ->
             [ div [] [ viewGroup group ]
-            , div [] [ button [ onClick <| ownerGroupChanged caseDetail <| OwnerEditing owner group groups ] [ text "Change" ] ]
+            , div [] [ button [ onClick <| changeCase { caseDetail | ownerGroup = OwnerEditing owner group groups } ] [ text "Change" ] ]
             ]
 
-        OwnerEditing _ group groups ->
-            [ SubmitNewGroup caseDetail
-                |> displayGroupSelect
-                    (case group of
-                        Just g ->
-                            Just g.id
+        OwnerEditing owner group groups ->
+            [ div []
+                [ SubmitNewGroup caseDetail
+                    |> displayGroupSelect
+                        (case group of
+                            Just g ->
+                                Just g.id
 
-                        Nothing ->
-                            Nothing
-                    )
-                    groups
+                            Nothing ->
+                                Nothing
+                        )
+                        groups
+                ]
+            , div [] [ button [ onClick <| changeCase { caseDetail | ownerGroup = OwnerViewing owner group groups } ] [ text "Cancel" ] ]
             ]
 
 
 displayCase : Auth -> CaseDetailData -> Html Msg
-displayCase auth case_ =
-    let
-        owner =
-            case case_.ownerGroup of
-                NotOwner a _ ->
-                    a
-
-                OwnerViewing a _ _ ->
-                    a
-
-                OwnerEditing a _ _ ->
-                    a
-    in
+displayCase auth caseDetail =
     dl []
         [ dt [] [ text "Reference" ]
-        , dd [] [ displayNamedNodeLink "/case" case_.node ]
+        , dd [] [ displayNamedNodeLink "/case" caseDetail.node ]
         , dt [] [ text "Deadline" ]
-        , dd [] [ text <| fromTime case_.deadline ]
+        , dd [] [ text <| fromTime caseDetail.deadline ]
         , dt [] [ text "Creator" ]
-        , dd [] [ displayNamedNodeLink "/user" owner ]
+        , dd []
+            [ displayNamedNodeLink "/user"
+                (case caseDetail.ownerGroup of
+                    NotOwner a _ ->
+                        a
+
+                    OwnerViewing a _ _ ->
+                        a
+
+                    OwnerEditing a _ _ ->
+                        a
+                )
+            ]
         , dt [] [ text "Group" ]
-        , dd [] <| displayCaseGroup case_
-        , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length case_.diagnoses) ++ ")" ]
-        , dd [] [ ul [] <| displayListItems displayDiagnosis case_.diagnoses ]
-        , dt [] [ text <| "Comments (" ++ String.fromInt (List.length case_.comments) ++ ")" ]
+        , dd [] <| displayCaseGroup caseDetail
+        , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length caseDetail.diagnoses) ++ ")" ]
+        , dd [] [ ul [] <| displayListItems (displayDiagnosis auth caseDetail) caseDetail.diagnoses ]
+        , dt [] [ text <| "Comments (" ++ String.fromInt (List.length caseDetail.comments) ++ ")" ]
         , dd []
             [ ul [] <|
-                displayListItems displayComment case_.comments
+                displayListItems displayComment caseDetail.comments
                     ++ (case auth of
                             SignedIn _ currentUser ->
-                                [ li [] <| displayNewComment currentUser case_ ]
+                                [ li [] <| displayNewComment currentUser caseDetail ]
 
                             SignedOut _ ->
                                 []
@@ -532,17 +576,107 @@ displayCase auth case_ =
         ]
 
 
-displayDiagnosis : DiagnosisDetailData -> List (Html msg)
-displayDiagnosis diagnosis =
+displayDiagnosis : Auth -> CaseDetailData -> DiagnosisDetailData -> List (Html Msg)
+displayDiagnosis auth caseDetail diagnosis =
+    let
+        toDiagnosisWithNewWager : String -> (DiagnosisDetailData -> DiagnosisDetailData)
+        toDiagnosisWithNewWager inputValue =
+            toDiagnosisWithJudgement << NotJudged << Just <| validateConfidence inputValue
+
+        toDiagnosisWithJudgement : Judgement -> DiagnosisDetailData -> DiagnosisDetailData
+        toDiagnosisWithJudgement judgement old =
+            case old.judgement of
+                Judged _ ->
+                    old
+
+                NotJudged _ ->
+                    { old
+                        | judgement =
+                            if old.node.id == diagnosis.node.id then
+                                judgement
+
+                            else
+                                NotJudged Nothing
+                    }
+
+        toDiagnosisWithoutNewWager old =
+            case old.judgement of
+                Judged _ ->
+                    old
+
+                NotJudged _ ->
+                    { old | judgement = NotJudged Nothing }
+
+        changeWager : String -> Msg
+        changeWager newValue =
+            changeCase { caseDetail | diagnoses = List.map (toDiagnosisWithNewWager newValue) caseDetail.diagnoses }
+    in
     [ h4 [] [ text diagnosis.node.name ]
-    , ul [] <| displayListItems displayWager diagnosis.wagers
-    , displayJudgement diagnosis.judgement
+    , ul [] <|
+        displayListItems displayWager diagnosis.wagers
+            ++ (case ( diagnosis.judgement, auth ) of
+                    ( Judged judgementData, _ ) ->
+                        [ text " Judged as "
+                        , strong [] [ displayOutcome judgementData.outcome ]
+                        , text " by "
+                        , displayNamedNodeLink "/user" judgementData.judgedBy
+                        , text <| " at " ++ fromTime judgementData.timestamp ++ ")"
+                        ]
+                            |> li []
+                            |> List.singleton
+
+                    ( NotJudged _, SignedOut _ ) ->
+                        []
+
+                    ( NotJudged wagerField, SignedIn _ user ) ->
+                        if List.any (\wager -> wager.creator.id == user.id) diagnosis.wagers then
+                            []
+
+                        else
+                            case wagerField of
+                                Nothing ->
+                                    [ button
+                                        [ type_ "button", onClick <| changeCase { caseDetail | diagnoses = List.map (toDiagnosisWithNewWager "") caseDetail.diagnoses } ]
+                                        [ text "Add wager" ]
+                                    ]
+                                        |> li []
+                                        |> List.singleton
+
+                                Just newWager ->
+                                    let
+                                        ( inputValue, submitButtonDisabled, formAttributes ) =
+                                            case newWager of
+                                                Valid intValue val ->
+                                                    ( val, False, [ onSubmit <| SubmitNewWager caseDetail diagnosis.node.id intValue ] )
+
+                                                Invalid _ val ->
+                                                    ( val, True, [] )
+                                    in
+                                    [ form formAttributes
+                                        [ displayNamedNodeLink "/user" <| NamedNodeData user.id user.name
+                                        , text " estimated "
+                                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", value inputValue, onInput changeWager ] []
+                                        , text "%"
+                                        , div []
+                                            [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
+                                            , button [ type_ "button", onClick <| changeCase { caseDetail | diagnoses = List.map toDiagnosisWithoutNewWager caseDetail.diagnoses } ] [ text "Cancel" ]
+                                            ]
+                                        ]
+                                    ]
+                                        |> li []
+                                        |> List.singleton
+               )
     ]
 
 
-commentChanged : CaseDetailData -> Maybe String -> Msg
-commentChanged caseDetail newComment =
-    { caseDetail | newComment = newComment } |> Just >> Success >> CaseDetail >> GotResponse
+changeCase : CaseDetailData -> Msg
+changeCase newCase =
+    newCase |> Just >> Success >> CaseDetail >> GotResponse
+
+
+changeComment : CaseDetailData -> Maybe String -> Msg
+changeComment caseDetail newComment =
+    changeCase { caseDetail | newComment = newComment }
 
 
 displayNewComment : UserCandidate -> CaseDetailData -> List (Html Msg)
@@ -552,15 +686,15 @@ displayNewComment currentUser caseDetail =
             [ displayNamedNodeLink "/user" <| NamedNodeData currentUser.id currentUser.name
             , blockquote []
                 [ form [ onSubmit <| SubmitComment caseDetail currentUser.id string ]
-                    [ input [ type_ "text", placeholder "Enter comment", onInput <| Just >> commentChanged caseDetail ] [ text string ]
+                    [ input [ type_ "text", placeholder "Enter comment", onInput <| Just >> changeComment caseDetail ] [ text string ]
                     , button [ type_ "submit", disabled << String.isEmpty << String.trim <| string ] [ text "Submit" ]
-                    , button [ type_ "button", onClick <| commentChanged caseDetail Nothing ] [ text "Cancel" ]
+                    , button [ type_ "button", onClick <| changeComment caseDetail Nothing ] [ text "Cancel" ]
                     ]
                 ]
             ]
 
         Nothing ->
-            [ button [ onClick <| commentChanged caseDetail <| Just "" ] [ text "Add comment" ] ]
+            [ button [ onClick <| changeComment caseDetail <| Just "" ] [ text "Add comment" ] ]
 
 
 displayComment : CommentData -> List (Html msg)
@@ -577,22 +711,6 @@ displayWager wager =
     , b [] [ text <| String.fromInt wager.confidence ++ "%" ]
     , text <| " at " ++ fromTime wager.timestamp
     ]
-
-
-displayJudgement : Maybe JudgementData -> Html msg
-displayJudgement judgement =
-    case judgement of
-        Just judged ->
-            p []
-                [ text " Judged as "
-                , strong [] [ displayOutcome judged.outcome ]
-                , text " by "
-                , displayNamedNodeLink "/user" judged.judgedBy
-                , text <| " at " ++ fromTime judged.timestamp ++ ")"
-                ]
-
-        Nothing ->
-            text "Not yet judged!"
 
 
 displayOutcome : Outcome -> Html msg
@@ -625,9 +743,9 @@ validateNonEmptyField fieldName inputValue =
            )
 
 
-caseReferenceChanged : CaseData -> String -> Msg
-caseReferenceChanged caseData reference =
-    ModifyNewCase { caseData | reference = validateReference reference }
+changeNewReference : CaseData -> String -> Msg
+changeNewReference caseData reference =
+    ChangeNewCase { caseData | reference = validateReference reference }
 
 
 validateDeadline : InputValue -> FormField Time.Posix
@@ -642,9 +760,9 @@ validateDeadline deadline =
            )
 
 
-caseDeadlineChanged : CaseData -> String -> Msg
-caseDeadlineChanged caseData deadline =
-    ModifyNewCase { caseData | deadline = validateDeadline deadline }
+changeNewDeadline : CaseData -> String -> Msg
+changeNewDeadline caseData deadline =
+    ChangeNewCase { caseData | deadline = validateDeadline deadline }
 
 
 blankPrediction =
@@ -653,12 +771,12 @@ blankPrediction =
 
 addNewLine : CaseData -> Msg
 addNewLine caseData =
-    ModifyNewCase { caseData | predictions = caseData.predictions ++ [ blankPrediction ] }
+    ChangeNewCase { caseData | predictions = caseData.predictions ++ [ blankPrediction ] }
 
 
-changePrediction : Int -> PredictionData -> CaseData -> Msg
-changePrediction index newPrediction caseData =
-    ModifyNewCase { caseData | predictions = List.take index caseData.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseData.predictions }
+changeNewPrediction : Int -> PredictionData -> CaseData -> Msg
+changeNewPrediction index newPrediction caseData =
+    ChangeNewCase { caseData | predictions = List.take index caseData.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseData.predictions }
 
 
 validateDiagnosis =
@@ -669,9 +787,9 @@ validateReference =
     validateNonEmptyField "Case reference"
 
 
-diagnosisChanged : Int -> PredictionData -> CaseData -> String -> Msg
-diagnosisChanged index oldPrediction caseData diagnosis =
-    changePrediction index { oldPrediction | diagnosis = validateDiagnosis diagnosis } caseData
+changeNewDiagnosis : Int -> PredictionData -> CaseData -> String -> Msg
+changeNewDiagnosis index oldPrediction caseData diagnosis =
+    changeNewPrediction index { oldPrediction | diagnosis = validateDiagnosis diagnosis } caseData
 
 
 validateConfidence : InputValue -> FormField Int
@@ -693,14 +811,14 @@ validateConfidence confidence =
            )
 
 
-confidenceChanged : Int -> PredictionData -> CaseData -> String -> Msg
-confidenceChanged index oldPrediction caseData confidence =
-    changePrediction index { oldPrediction | confidence = validateConfidence confidence } caseData
+changeNewConfidence : Int -> PredictionData -> CaseData -> String -> Msg
+changeNewConfidence index oldPrediction caseData confidence =
+    changeNewPrediction index { oldPrediction | confidence = validateConfidence confidence } caseData
 
 
-removePrediction : Int -> CaseData -> Msg
-removePrediction index caseData =
-    ModifyNewCase { caseData | predictions = List.take index caseData.predictions ++ List.drop (index + 1) caseData.predictions }
+changeNewPredictionRemove : Int -> CaseData -> Msg
+changeNewPredictionRemove index caseData =
+    ChangeNewCase { caseData | predictions = List.take index caseData.predictions ++ List.drop (index + 1) caseData.predictions }
 
 
 displayPrediction : CaseData -> Int -> PredictionData -> Html Msg
@@ -711,7 +829,7 @@ displayPrediction caseData index prediction =
             , input
                 [ required True
                 , value <| getInputValue prediction.diagnosis
-                , onInput (diagnosisChanged index prediction caseData)
+                , onInput (changeNewDiagnosis index prediction caseData)
                 ]
                 []
             , displayValidity prediction.diagnosis
@@ -724,12 +842,12 @@ displayPrediction caseData index prediction =
                 , Html.Attributes.min "0"
                 , Html.Attributes.max "100"
                 , value <| getInputValue prediction.confidence
-                , onInput (confidenceChanged index prediction caseData)
+                , onInput (changeNewConfidence index prediction caseData)
                 ]
                 []
             , displayValidity prediction.confidence
             ]
-        , button [ onClick (removePrediction index caseData), disabled <| List.length caseData.predictions == 1 ] [ text "➖" ]
+        , button [ onClick (changeNewPredictionRemove index caseData), disabled <| List.length caseData.predictions == 1 ] [ text "➖" ]
         ]
 
 
@@ -802,7 +920,7 @@ displayOption isSelected node =
 
 caseGroupChanged : CaseData -> Maybe Id -> Msg
 caseGroupChanged caseData groupId =
-    ModifyNewCase { caseData | groupId = groupId }
+    ChangeNewCase { caseData | groupId = groupId }
 
 
 determineSelected : Maybe Id -> Id -> Bool
@@ -831,8 +949,8 @@ displayNewForm : GroupListResponse -> CaseData -> Html Msg
 displayNewForm userGroups caseData =
     div [] <|
         fieldset []
-            [ div [] [ label [] [ text "Case reference: " ], input [ required True, value <| getInputValue caseData.reference, onInput (caseReferenceChanged caseData) ] [], displayValidity caseData.reference ]
-            , div [] [ label [] [ text "Deadline: " ], input [ required True, type_ "datetime-local", value <| getInputValue caseData.deadline, onInput (caseDeadlineChanged caseData) ] [], displayValidity caseData.deadline ]
+            [ div [] [ label [] [ text "Case reference: " ], input [ required True, value <| getInputValue caseData.reference, onInput (changeNewReference caseData) ] [], displayValidity caseData.reference ]
+            , div [] [ label [] [ text "Deadline: " ], input [ required True, type_ "datetime-local", value <| getInputValue caseData.deadline, onInput (changeNewDeadline caseData) ] [], displayValidity caseData.deadline ]
             , div [] [ label [] [ text "Group: " ], displayGroupSelect caseData.groupId userGroups <| caseGroupChanged caseData ]
             ]
             :: List.indexedMap (displayPrediction caseData) caseData.predictions
@@ -1153,8 +1271,13 @@ type alias DiagnosisLimitedData =
 type alias DiagnosisDetailData =
     { node : NamedNodeData
     , wagers : List WagerData
-    , judgement : Maybe JudgementData
+    , judgement : Judgement
     }
+
+
+type Judgement
+    = Judged JudgementData
+    | NotJudged (Maybe (FormField Int))
 
 
 type alias WagerData =
@@ -1172,10 +1295,20 @@ type alias JudgementData =
 
 
 mapToDiagnosisDetailData =
+    let
+        mapFunction : Maybe JudgementData -> Judgement
+        mapFunction j =
+            case j of
+                Just judgement ->
+                    Judged judgement
+
+                Nothing ->
+                    NotJudged Nothing
+    in
     SelectionSet.map3 DiagnosisDetailData
         (SelectionSet.map2 NamedNodeData Diagnosis.id Diagnosis.name)
         (Diagnosis.wagers <| mapToWagerData)
-        (Diagnosis.judgement <| mapToJudgementData)
+        (SelectionSet.map mapFunction <| Diagnosis.judgement <| mapToJudgementData)
 
 
 mapToWagerData =
