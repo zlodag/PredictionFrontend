@@ -469,15 +469,17 @@ displayCaseGroup caseDetail =
                 Nothing ->
                     text "None"
     in
-    [ case caseDetail.ownerGroup of
+    case caseDetail.ownerGroup of
         NotOwner _ g ->
-            viewGroup g
+            [ viewGroup g ]
 
         OwnerViewing owner group groups ->
-            div [] [ viewGroup group, button [ onClick <| ownerGroupChanged caseDetail <| OwnerEditing owner group groups ] [ text "Change" ] ]
+            [ div [] [ viewGroup group ]
+            , div [] [ button [ onClick <| ownerGroupChanged caseDetail <| OwnerEditing owner group groups ] [ text "Change" ] ]
+            ]
 
         OwnerEditing _ group groups ->
-            SubmitNewGroup caseDetail
+            [ SubmitNewGroup caseDetail
                 |> displayGroupSelect
                     (case group of
                         Just g ->
@@ -487,7 +489,7 @@ displayCaseGroup caseDetail =
                             Nothing
                     )
                     groups
-    ]
+            ]
 
 
 displayCase : Auth -> CaseDetailData -> Html Msg
@@ -538,9 +540,9 @@ displayDiagnosis diagnosis =
     ]
 
 
-commentChanged : CaseDetailData -> String -> Msg
+commentChanged : CaseDetailData -> Maybe String -> Msg
 commentChanged caseDetail newComment =
-    { caseDetail | newComment = Just newComment } |> Just >> Success >> CaseDetail >> GotResponse
+    { caseDetail | newComment = newComment } |> Just >> Success >> CaseDetail >> GotResponse
 
 
 displayNewComment : UserCandidate -> CaseDetailData -> List (Html Msg)
@@ -550,14 +552,15 @@ displayNewComment currentUser caseDetail =
             [ displayNamedNodeLink "/user" <| NamedNodeData currentUser.id currentUser.name
             , blockquote []
                 [ form [ onSubmit <| SubmitComment caseDetail currentUser.id string ]
-                    [ input [ type_ "text", placeholder "Enter comment", onInput <| commentChanged caseDetail ] [ text string ]
-                    , input [ type_ "submit", disabled << String.isEmpty << String.trim <| string ] []
+                    [ input [ type_ "text", placeholder "Enter comment", onInput <| Just >> commentChanged caseDetail ] [ text string ]
+                    , button [ type_ "submit", disabled << String.isEmpty << String.trim <| string ] [ text "Submit" ]
+                    , button [ type_ "button", onClick <| commentChanged caseDetail Nothing ] [ text "Cancel" ]
                     ]
                 ]
             ]
 
         Nothing ->
-            [ button [ onClick <| commentChanged caseDetail "" ] [ text "Add comment" ] ]
+            [ button [ onClick <| commentChanged caseDetail <| Just "" ] [ text "Add comment" ] ]
 
 
 displayComment : CommentData -> List (Html msg)
