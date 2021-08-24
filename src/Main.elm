@@ -996,22 +996,22 @@ parseUrlAndRequest model url =
                     ( { model | state = WelcomePage }, Cmd.none )
 
                 User id ->
-                    ( { model | state = UserDetail RemoteData.Loading }
+                    ( model
                     , Query.user { id = id } mapToUserDetailData |> makeRequest (UserDetail >> GotResponse)
                     )
 
                 Groups ->
-                    ( { model | state = GroupList RemoteData.Loading }
+                    ( model
                     , Query.groups identity (SelectionSet.map2 NamedNodeData Group.id Group.name) |> makeRequest (GroupList >> GotResponse)
                     )
 
                 Group id ->
-                    ( { model | state = GroupDetail RemoteData.Loading }
+                    ( model
                     , Query.group { id = id } mapToGroupDetailData |> makeRequest (GroupDetail >> GotResponse)
                     )
 
                 Case id ->
-                    ( { model | state = GroupDetail RemoteData.Loading }
+                    ( model
                     , Query.case_ { id = id } mapToCaseDetailData |> makeRequest (CaseDetail >> GotResponse)
                     )
 
