@@ -139,12 +139,8 @@ type Msg
     | SubmitComment CaseDetailData Id String
     | SubmitNewGroup CaseDetailData (Maybe Id)
     | SubmitNewWager CaseDetailData Id Int
+    | SubmitOutcome CaseDetailData Id Outcome
     | CaseCreated (GraphqlRemoteData Id)
-
-
-
---| CommentCreated (GraphqlRemoteData CommentData)
---| GotUserGroups Id (GraphqlRemoteData GroupListResponse)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -169,9 +165,10 @@ update msg model =
             parseUrlAndRequest { model | auth = auth } url
 
         UserChanged auth ->
-            ( { model | auth = auth, state = NoData }
-            , Nav.pushUrl model.key "/"
-            )
+            --( { model | auth = auth, state = NoData }
+            --, Nav.pushUrl model.key "/"
+            --)
+            ( { model | auth = auth }, Cmd.none )
 
         GotResponse graphqlRemoteData ->
             ( { model | state = graphqlRemoteData }
@@ -281,11 +278,11 @@ update msg model =
                             | wagers = old.wagers ++ [ newWager ]
                             , judgement =
                                 case old.judgement of
-                                    NotJudged (Just _) ->
-                                        NotJudged Nothing
+                                    Judged _ ->
+                                        old.judgement
 
                                     _ ->
-                                        old.judgement
+                                        NotJudged
                         }
 
                     else
@@ -311,6 +308,43 @@ update msg model =
                     Mutation.addWager
                         (Mutation.AddWagerRequiredArguments user.id diagnosisId confidence)
                         mapToWagerData
+                        |> Graphql.Http.mutationRequest graphQlEndpoint
+                        |> Graphql.Http.send (RemoteData.fromResult >> alterCase)
+
+                _ ->
+                    Cmd.none
+            )
+
+        SubmitOutcome caseDetail diagnosisId outcome ->
+            let
+                filterDiagnoses : JudgementData -> DiagnosisDetailData -> DiagnosisDetailData
+                filterDiagnoses newJudgement old =
+                    if old.node.id == diagnosisId then
+                        { old | judgement = Judged newJudgement }
+
+                    else
+                        old
+
+                alterCase : GraphqlRemoteData JudgementData -> Msg
+                alterCase newJudgementResult =
+                    GotResponse
+                        << CaseDetail
+                        << Success
+                        << Just
+                    <|
+                        case newJudgementResult of
+                            Success newJudgement ->
+                                { caseDetail | diagnoses = List.map (filterDiagnoses newJudgement) caseDetail.diagnoses }
+
+                            _ ->
+                                caseDetail
+            in
+            ( model
+            , case model.auth of
+                SignedIn _ user ->
+                    Mutation.judgeOutcome
+                        (Mutation.JudgeOutcomeRequiredArguments diagnosisId user.id outcome)
+                        mapToJudgementData
                         |> Graphql.Http.mutationRequest graphQlEndpoint
                         |> Graphql.Http.send (RemoteData.fromResult >> alterCase)
 
@@ -581,7 +615,7 @@ displayDiagnosis auth caseDetail diagnosis =
     let
         toDiagnosisWithNewWager : String -> (DiagnosisDetailData -> DiagnosisDetailData)
         toDiagnosisWithNewWager inputValue =
-            toDiagnosisWithJudgement << NotJudged << Just <| validateConfidence inputValue
+            validateConfidence inputValue |> AddingWager |> toDiagnosisWithJudgement
 
         toDiagnosisWithJudgement : Judgement -> DiagnosisDetailData -> DiagnosisDetailData
         toDiagnosisWithJudgement judgement old =
@@ -589,82 +623,103 @@ displayDiagnosis auth caseDetail diagnosis =
                 Judged _ ->
                     old
 
-                NotJudged _ ->
+                _ ->
                     { old
                         | judgement =
                             if old.node.id == diagnosis.node.id then
                                 judgement
 
                             else
-                                NotJudged Nothing
+                                NotJudged
                     }
 
-        toDiagnosisWithoutNewWager old =
+        toDiagnosisWithoutActiveInput old =
             case old.judgement of
                 Judged _ ->
                     old
 
-                NotJudged _ ->
-                    { old | judgement = NotJudged Nothing }
+                _ ->
+                    { old | judgement = NotJudged }
 
         changeWager : String -> Msg
         changeWager newValue =
             changeCase { caseDetail | diagnoses = List.map (toDiagnosisWithNewWager newValue) caseDetail.diagnoses }
+
+        judgedAsBy outcome judgedBy =
+            [ text " Judged as " ] ++ outcome ++ [ text " by ", displayNamedNodeLink "/user" judgedBy ]
+
+        cancelButton =
+            button [ type_ "button", onClick <| changeCase { caseDetail | diagnoses = List.map toDiagnosisWithoutActiveInput caseDetail.diagnoses } ] [ text "Cancel" ]
     in
     [ h4 [] [ text diagnosis.node.name ]
     , ul [] <|
         displayListItems displayWager diagnosis.wagers
             ++ (case ( diagnosis.judgement, auth ) of
                     ( Judged judgementData, _ ) ->
-                        [ text " Judged as "
-                        , strong [] [ displayOutcome judgementData.outcome ]
-                        , text " by "
-                        , displayNamedNodeLink "/user" judgementData.judgedBy
-                        , text <| " at " ++ fromTime judgementData.timestamp ++ ")"
+                        judgedAsBy [ strong [] [ displayOutcome judgementData.outcome ] ] judgementData.judgedBy
+                            ++ [ text <| " at " ++ fromTime judgementData.timestamp
+                               ]
+                            |> li []
+                            |> List.singleton
+
+                    ( _, SignedOut _ ) ->
+                        []
+
+                    ( NotJudged, SignedIn _ user ) ->
+                        (if List.any (\wager -> wager.creator.id == user.id) diagnosis.wagers then
+                            []
+
+                         else
+                            [ button
+                                [ type_ "button", onClick <| changeCase { caseDetail | diagnoses = List.map (toDiagnosisWithNewWager "") caseDetail.diagnoses } ]
+                                [ text "Add wager" ]
+                            ]
+                        )
+                            ++ [ button
+                                    [ type_ "button", onClick <| changeCase { caseDetail | diagnoses = List.map (toDiagnosisWithJudgement AddingJudgement) caseDetail.diagnoses } ]
+                                    [ text "Judge" ]
+                               ]
+                            |> li []
+                            |> List.singleton
+
+                    ( AddingWager newWager, SignedIn _ user ) ->
+                        let
+                            ( inputValue, submitButtonDisabled, formAttributes ) =
+                                case newWager of
+                                    Valid intValue val ->
+                                        ( val, False, [ onSubmit <| SubmitNewWager caseDetail diagnosis.node.id intValue ] )
+
+                                    Invalid _ val ->
+                                        ( val, True, [] )
+                        in
+                        [ form formAttributes
+                            [ displayNamedNodeLink "/user" <| NamedNodeData user.id user.name
+                            , text " estimated "
+                            , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", value inputValue, onInput changeWager ] []
+                            , text "%"
+                            , div []
+                                [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
+                                , cancelButton
+                                ]
+                            ]
                         ]
                             |> li []
                             |> List.singleton
 
-                    ( NotJudged _, SignedOut _ ) ->
-                        []
-
-                    ( NotJudged wagerField, SignedIn _ user ) ->
-                        if List.any (\wager -> wager.creator.id == user.id) diagnosis.wagers then
-                            []
-
-                        else
-                            case wagerField of
-                                Nothing ->
-                                    [ button
-                                        [ type_ "button", onClick <| changeCase { caseDetail | diagnoses = List.map (toDiagnosisWithNewWager "") caseDetail.diagnoses } ]
-                                        [ text "Add wager" ]
-                                    ]
-                                        |> li []
-                                        |> List.singleton
-
-                                Just newWager ->
-                                    let
-                                        ( inputValue, submitButtonDisabled, formAttributes ) =
-                                            case newWager of
-                                                Valid intValue val ->
-                                                    ( val, False, [ onSubmit <| SubmitNewWager caseDetail diagnosis.node.id intValue ] )
-
-                                                Invalid _ val ->
-                                                    ( val, True, [] )
-                                    in
-                                    [ form formAttributes
-                                        [ displayNamedNodeLink "/user" <| NamedNodeData user.id user.name
-                                        , text " estimated "
-                                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", value inputValue, onInput changeWager ] []
-                                        , text "%"
-                                        , div []
-                                            [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
-                                            , button [ type_ "button", onClick <| changeCase { caseDetail | diagnoses = List.map toDiagnosisWithoutNewWager caseDetail.diagnoses } ] [ text "Cancel" ]
-                                            ]
-                                        ]
-                                    ]
-                                        |> li []
-                                        |> List.singleton
+                    ( AddingJudgement, SignedIn _ user ) ->
+                        let
+                            judgeOutcome =
+                                SubmitOutcome caseDetail diagnosis.node.id
+                        in
+                        judgedAsBy
+                            [ button [ type_ "button", onClick <| judgeOutcome Right ] [ text "Right" ]
+                            , button [ type_ "button", onClick <| judgeOutcome Wrong ] [ text "Wrong" ]
+                            , button [ type_ "button", onClick <| judgeOutcome Indeterminate ] [ text "Indeterminate" ]
+                            ]
+                            (NamedNodeData user.id user.name)
+                            ++ [ div [] [ cancelButton ] ]
+                            |> li []
+                            |> List.singleton
                )
     ]
 
@@ -1277,7 +1332,9 @@ type alias DiagnosisDetailData =
 
 type Judgement
     = Judged JudgementData
-    | NotJudged (Maybe (FormField Int))
+    | NotJudged
+    | AddingJudgement
+    | AddingWager (FormField Int)
 
 
 type alias WagerData =
@@ -1303,7 +1360,7 @@ mapToDiagnosisDetailData =
                     Judged judgement
 
                 Nothing ->
-                    NotJudged Nothing
+                    NotJudged
     in
     SelectionSet.map3 DiagnosisDetailData
         (SelectionSet.map2 NamedNodeData Diagnosis.id Diagnosis.name)
