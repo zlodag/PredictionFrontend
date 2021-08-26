@@ -136,11 +136,12 @@ type Msg
     | UserChanged Auth
     | GotResponse State
     | ChangeNewCase CaseData
-    | SubmitCase CaseInput
+    | SubmitCase Id CaseInput
     | SubmitComment CaseDetailData Id String
     | SubmitGroup CaseDetailData (Maybe Id)
-    | SubmitWager CaseDetailData Id Int
-    | SubmitJudgement CaseDetailData Id Outcome
+    | SubmitDiagnosis CaseDetailData Id PredictionInput
+    | SubmitWager CaseDetailData Id Id Int
+    | SubmitJudgement CaseDetailData Id Id Outcome
     | CaseCreated (GraphqlRemoteData Id)
 
 
@@ -189,13 +190,8 @@ update msg model =
                 _ ->
                     ( model, Cmd.none )
 
-        SubmitCase caseData ->
-            case model.auth of
-                SignedIn _ currentUser ->
-                    ( model, submitCase { caseData | creatorId = currentUser.node.id } )
-
-                SignedOut _ ->
-                    ( model, Cmd.none )
+        SubmitCase creatorId caseData ->
+            ( model, submitCase { caseData | creatorId = creatorId } )
 
         SubmitComment caseDetail creatorId string ->
             let
@@ -235,7 +231,21 @@ update msg model =
                 |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewGroup caseDetail)
             )
 
-        SubmitWager caseDetail diagnosisId confidence ->
+        SubmitDiagnosis caseDetail creatorId predictionInput ->
+            let
+                withNewDiagnosis : DiagnosisDetailData -> CaseDetailData
+                withNewDiagnosis newDiagnosis =
+                    { caseDetail | diagnoses = caseDetail.diagnoses ++ [ newDiagnosis ] }
+            in
+            ( model
+            , Mutation.addDiagnosis
+                (Mutation.AddDiagnosisRequiredArguments creatorId caseDetail.node.id predictionInput)
+                mapToDiagnosisDetailData
+                |> Graphql.Http.mutationRequest graphQlEndpoint
+                |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewDiagnosis caseDetail)
+            )
+
+        SubmitWager caseDetail creatorId diagnosisId confidence ->
             let
                 appendWager : WagerData -> DiagnosisDetailData -> DiagnosisDetailData
                 appendWager newWager diagnosis =
@@ -250,19 +260,14 @@ update msg model =
                     { caseDetail | diagnoses = List.map (appendWager newWager) caseDetail.diagnoses }
             in
             ( model
-            , case model.auth of
-                SignedIn _ user ->
-                    Mutation.addWager
-                        (Mutation.AddWagerRequiredArguments user.node.id diagnosisId confidence)
-                        mapToWagerData
-                        |> Graphql.Http.mutationRequest graphQlEndpoint
-                        |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewWager caseDetail)
-
-                _ ->
-                    Cmd.none
+            , Mutation.addWager
+                (Mutation.AddWagerRequiredArguments creatorId diagnosisId confidence)
+                mapToWagerData
+                |> Graphql.Http.mutationRequest graphQlEndpoint
+                |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewWager caseDetail)
             )
 
-        SubmitJudgement caseDetail diagnosisId outcome ->
+        SubmitJudgement caseDetail creatorId diagnosisId outcome ->
             let
                 addJudgement : JudgementData -> DiagnosisDetailData -> DiagnosisDetailData
                 addJudgement newJudgement diagnosis =
@@ -277,16 +282,11 @@ update msg model =
                     { caseDetail | diagnoses = List.map (addJudgement newJudgement) caseDetail.diagnoses }
             in
             ( model
-            , case model.auth of
-                SignedIn _ user ->
-                    Mutation.judgeOutcome
-                        (Mutation.JudgeOutcomeRequiredArguments diagnosisId user.node.id outcome)
-                        mapToJudgementData
-                        |> Graphql.Http.mutationRequest graphQlEndpoint
-                        |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewJudgement caseDetail)
-
-                _ ->
-                    Cmd.none
+            , Mutation.judgeOutcome
+                (Mutation.JudgeOutcomeRequiredArguments diagnosisId creatorId outcome)
+                mapToJudgementData
+                |> Graphql.Http.mutationRequest graphQlEndpoint
+                |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewJudgement caseDetail)
             )
 
 
@@ -381,7 +381,7 @@ displayAuth auth =
                 )
             <|
                 NamedNodeData (Id "") "<No user>"
-                    :: List.map (\user -> NamedNodeData user.node.id user.node.name)
+                    :: List.map (\user -> user.node)
                         (case auth of
                             SignedIn users _ ->
                                 users
@@ -426,7 +426,7 @@ displayData model =
         NewCase caseData ->
             case model.auth of
                 SignedIn _ currentUser ->
-                    displayNewForm currentUser.groups caseData
+                    displayNewForm currentUser caseData
 
                 _ ->
                     text "Sign in first"
@@ -545,7 +545,7 @@ displayCase auth caseDetail =
         , dt [] [ text "Group" ]
         , dd [] <| displayCaseGroup auth caseDetail
         , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length caseDetail.diagnoses) ++ ")" ]
-        , dd [] [ ul [] <| displayListItems (displayDiagnosis auth caseDetail) caseDetail.diagnoses ]
+        , dd [] [ ul [] <| displayListItems (displayDiagnosis auth caseDetail) caseDetail.diagnoses ++ displayNewDiagnosis auth caseDetail ]
         , dt [] [ text <| "Comments (" ++ String.fromInt (List.length caseDetail.comments) ++ ")" ]
         , dd []
             [ ul [] <|
@@ -558,31 +558,6 @@ displayCase auth caseDetail =
 displayDiagnosis : Auth -> CaseDetailData -> DiagnosisDetailData -> List (Html Msg)
 displayDiagnosis auth caseDetail diagnosis =
     let
-        --toDiagnosisWithNewWager : String -> (DiagnosisDetailData -> DiagnosisDetailData)
-        --toDiagnosisWithNewWager inputValue =
-        --    validateConfidence inputValue |> AddingWager diagnosis.node.id |> toDiagnosisWithJudgement
-        --toDiagnosisWithJudgement : Judgement -> DiagnosisDetailData -> DiagnosisDetailData
-        --toDiagnosisWithJudgement judgement old =
-        --    case old.judgement of
-        --        Judged _ ->
-        --            old
-        --
-        --        _ ->
-        --            { old
-        --                | judgement =
-        --                    if old.node.id == diagnosis.node.id then
-        --                        judgement
-        --
-        --                    else
-        --                        NotJudged
-        --            }
-        --toDiagnosisWithoutActiveInput old =
-        --    case old.judgement of
-        --        Judged _ ->
-        --            old
-        --
-        --        _ ->
-        --            { old | judgement = NotJudged }
         changeWager : String -> Msg
         changeWager newValue =
             changeCase { caseDetail | state = AddingWager diagnosis.node.id <| validateConfidence newValue }
@@ -623,11 +598,11 @@ displayDiagnosis auth caseDetail diagnosis =
                             ( SignedIn _ user, Judging id ) ->
                                 let
                                     judgeOutcomeButton outcome label =
-                                        button [ type_ "button", onClick <| SubmitJudgement caseDetail diagnosis.node.id outcome ] [ text label ]
+                                        button [ type_ "button", onClick <| SubmitJudgement caseDetail user.node.id diagnosis.node.id outcome ] [ text label ]
                                 in
                                 if id == diagnosis.node.id then
                                     judgedAsBy [ judgeOutcomeButton Right "Right", judgeOutcomeButton Wrong "Wrong", judgeOutcomeButton Indeterminate "Indeterminate" ]
-                                        (NamedNodeData user.node.id user.node.name)
+                                        user.node
                                         ++ [ div [] [ cancelEditButton caseDetail ] ]
                                         |> li []
                                         |> List.singleton
@@ -640,14 +615,14 @@ displayDiagnosis auth caseDetail diagnosis =
                                     ( inputValue, submitButtonDisabled, formAttributes ) =
                                         case newWager of
                                             Valid intValue val ->
-                                                ( val, False, [ onSubmit <| SubmitWager caseDetail diagnosis.node.id intValue ] )
+                                                ( val, False, [ onSubmit <| SubmitWager caseDetail user.node.id diagnosis.node.id intValue ] )
 
                                             Invalid _ val ->
                                                 ( val, True, [] )
                                 in
                                 if id == diagnosis.node.id then
                                     [ form formAttributes
-                                        [ displayNamedNodeLink "/user" <| NamedNodeData user.node.id user.node.name
+                                        [ displayNamedNodeLink "/user" user.node
                                         , text " estimated "
                                         , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", value inputValue, onInput changeWager ] []
                                         , text "%"
@@ -669,6 +644,59 @@ displayDiagnosis auth caseDetail diagnosis =
     ]
 
 
+displayNewDiagnosis : Auth -> CaseDetailData -> List (Html Msg)
+displayNewDiagnosis auth caseDetail =
+    case ( auth, caseDetail.state ) of
+        ( SignedIn _ _, Viewing ) ->
+            [ button
+                [ type_ "button", onClick <| changeCase { caseDetail | state = AddingDiagnosis blankPrediction } ]
+                [ text "Add diagnosis" ]
+            ]
+                |> h4 []
+                |> List.singleton
+                |> li []
+                |> List.singleton
+
+        ( SignedIn _ user, AddingDiagnosis prediction ) ->
+            let
+                ( submitButtonDisabled, formAttributes ) =
+                    case ( prediction.diagnosis, prediction.confidence ) of
+                        ( Valid diagnosis _, Valid confidence _ ) ->
+                            ( False, [ onSubmit <| SubmitDiagnosis caseDetail user.node.id <| PredictionInput diagnosis confidence ] )
+
+                        _ ->
+                            ( True, [] )
+
+                changePrediction newPrediction =
+                    changeCase { caseDetail | state = AddingDiagnosis newPrediction }
+
+                changeDiagnosis newValue =
+                    changePrediction { prediction | diagnosis = validateDiagnosis newValue }
+
+                changeConfidence newValue =
+                    changePrediction { prediction | confidence = validateConfidence newValue }
+            in
+            [ form formAttributes
+                [ h4 [] [ input [ type_ "text", placeholder "Diagnosis", value <| getInputValue prediction.diagnosis, onInput changeDiagnosis ] [] ]
+                , ul []
+                    [ li []
+                        [ displayNamedNodeLink "/user" user.node
+                        , text " estimated "
+                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", value <| getInputValue prediction.confidence, onInput changeConfidence ] []
+                        , text "%"
+                        ]
+                    ]
+                , button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
+                , cancelEditButton caseDetail
+                ]
+            ]
+                |> li []
+                |> List.singleton
+
+        _ ->
+            []
+
+
 changeCase : CaseDetailData -> Msg
 changeCase newCase =
     newCase |> Just >> Success >> CaseDetail >> GotResponse
@@ -683,10 +711,10 @@ displayNewComment auth caseDetail =
     in
     case ( auth, caseDetail.state ) of
         ( SignedIn _ user, AddingComment string ) ->
-            [ displayNamedNodeLink "/user" <| NamedNodeData user.node.id user.node.name
+            [ displayNamedNodeLink "/user" user.node
             , blockquote []
                 [ form [ onSubmit <| SubmitComment caseDetail user.node.id string ]
-                    [ input [ type_ "text", placeholder "Enter comment", onInput changeComment ] [ text string ]
+                    [ input [ type_ "text", placeholder "Enter comment", onInput changeComment, value string ] []
                     , button [ type_ "submit", disabled << String.isEmpty << String.trim <| string ] [ text "Submit" ]
                     , cancelEditButton caseDetail
                     ]
@@ -884,34 +912,26 @@ displayValidity field =
             span [ style "background-color" "red", style "color" "white" ] [ text ("✗ " ++ validationMessage) ]
 
 
-displayDebug : CaseData -> Html Msg
-displayDebug data =
-    case prepareCaseInput data of
-        Just caseData ->
-            div []
-                [ dl []
-                    [ dt [] [ text "Reference" ]
-                    , dd [] [ text caseData.reference ]
-                    , dt [] [ text "Deadline" ]
-                    , dd [] [ caseData.deadline |> Iso8601.fromTime >> String.dropRight 5 |> text ]
-                    , dt [] [ text "Group" ]
-                    , dd []
-                        [ text <|
-                            case caseData.groupId of
-                                Present (Id id) ->
-                                    id
+displayDebug : CaseInput -> Html Msg
+displayDebug caseInput =
+    dl []
+        [ dt [] [ text "Reference" ]
+        , dd [] [ text caseInput.reference ]
+        , dt [] [ text "Deadline" ]
+        , dd [] [ caseInput.deadline |> Iso8601.fromTime >> String.dropRight 5 |> text ]
+        , dt [] [ text "Group" ]
+        , dd []
+            [ text <|
+                case caseInput.groupId of
+                    Present (Id id) ->
+                        id
 
-                                _ ->
-                                    "None"
-                        ]
-                    , dt [] [ text "Predictions" ]
-                    , dd [] [ caseData.predictions |> List.map (printPrediction >> List.singleton >> li []) |> ul [] ]
-                    ]
-                , button [ onClick <| SubmitCase caseData ] [ text "Submit" ]
-                ]
-
-        Nothing ->
-            text "..."
+                    _ ->
+                        "None"
+            ]
+        , dt [] [ text "Predictions" ]
+        , dd [] [ caseInput.predictions |> List.map (printPrediction >> List.singleton >> li []) |> ul [] ]
+        ]
 
 
 displayOption : (Id -> Bool) -> NamedNodeData -> Html Msg
@@ -948,18 +968,23 @@ displayGroupSelect currentGroupId groups msgFn =
                 :: groups
 
 
-displayNewForm : GroupListResponse -> CaseData -> Html Msg
-displayNewForm userGroups caseData =
+displayNewForm : UserCandidate -> CaseData -> Html Msg
+displayNewForm user caseData =
     div [] <|
         fieldset []
             [ div [] [ label [] [ text "Case reference: " ], input [ required True, value <| getInputValue caseData.reference, onInput (changeNewReference caseData) ] [], displayValidity caseData.reference ]
             , div [] [ label [] [ text "Deadline: " ], input [ required True, type_ "datetime-local", value <| getInputValue caseData.deadline, onInput (changeNewDeadline caseData) ] [], displayValidity caseData.deadline ]
-            , div [] [ label [] [ text "Group: " ], displayGroupSelect caseData.groupId userGroups <| caseGroupChanged caseData ]
+            , div [] [ label [] [ text "Group: " ], displayGroupSelect caseData.groupId user.groups <| caseGroupChanged caseData ]
             ]
             :: List.indexedMap (displayPrediction caseData) caseData.predictions
-            ++ [ fieldset [] [ button [ onClick (addNewLine caseData) ] [ text "➕" ] ]
-               , displayDebug caseData
-               ]
+            ++ [ fieldset [] [ button [ onClick (addNewLine caseData) ] [ text "➕" ] ] ]
+            ++ (case prepareCaseInput caseData of
+                    Just caseInput ->
+                        [ displayDebug caseInput, button [ onClick <| SubmitCase user.node.id caseInput ] [ text "Submit" ] ]
+
+                    _ ->
+                        []
+               )
 
 
 
@@ -1210,6 +1235,7 @@ mapToCommentData =
 type CaseDetailState
     = Viewing
     | ChangingGroup (List NamedNodeData)
+    | AddingDiagnosis PredictionData
     | AddingWager Id (FormField Int)
     | Judging Id
     | AddingComment String
@@ -1238,12 +1264,6 @@ mapToCaseDetailData =
 
 type alias CaseDetailResponse =
     Maybe CaseDetailData
-
-
-
---caseDetailQuery : Id -> SelectionSet CaseDetailResponse RootQuery
---caseDetailQuery id =
---    Query.case_ { id = id } <| mapToCaseDetailData
 
 
 type alias DiagnosisLimitedData =
@@ -1282,16 +1302,6 @@ type alias JudgementData =
 
 
 mapToDiagnosisDetailData =
-    --let
-    --    mapFunction : Maybe JudgementData -> Judgement
-    --    mapFunction j =
-    --        case j of
-    --            Just judgement ->
-    --                Judged judgement
-    --
-    --            Nothing ->
-    --                NotJudged
-    --in
     SelectionSet.map3 DiagnosisDetailData
         (SelectionSet.map2 NamedNodeData Diagnosis.id Diagnosis.name)
         (Diagnosis.wagers <| mapToWagerData)
