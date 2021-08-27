@@ -7,7 +7,7 @@ import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, viewData)
-import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, form, h4, hr, input, label, li, option, select, span, strong, text, ul)
+import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, form, h4, hr, input, label, li, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
 import Html.Attributes exposing (disabled, href, placeholder, required, selected, step, style, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
 import Iso8601 exposing (fromTime)
@@ -19,11 +19,13 @@ import Predictions.Object.Comment as Comment
 import Predictions.Object.Diagnosis as Diagnosis
 import Predictions.Object.Group as Group
 import Predictions.Object.Judgement as Judgement
+import Predictions.Object.Score as Score
 import Predictions.Object.User as User
 import Predictions.Object.Wager as Wager
-import Predictions.Query as Query exposing (GroupsOptionalArguments)
+import Predictions.Query as Query
 import Predictions.Scalar exposing (Id(..))
 import RemoteData exposing (RemoteData(..))
+import Round
 import ScalarCodecs exposing (Id, Timestamp)
 import String
 import Time
@@ -80,10 +82,11 @@ type alias CaseData =
 
 type State
     = WelcomePage
-    | UserDetail (GraphqlRemoteData UserDetailResponse)
-    | GroupList (GraphqlRemoteData GroupListResponse)
-    | GroupDetail (GraphqlRemoteData GroupDetailResponse)
-    | CaseDetail (GraphqlRemoteData CaseDetailResponse)
+    | UserDetail (GraphqlRemoteData UserDetailData)
+    | ScoreDetail (GraphqlRemoteData (List Score))
+    | GroupList (GraphqlRemoteData (List NamedNodeData))
+    | GroupDetail (GraphqlRemoteData GroupDetailData)
+    | CaseDetail (GraphqlRemoteData CaseDetailData)
     | NewCase CaseData
     | NoData
 
@@ -200,8 +203,9 @@ update msg model =
                     { caseDetail | comments = caseDetail.comments ++ [ newComment ] }
             in
             ( model
-            , mapToCommentData
-                |> Mutation.addComment (Mutation.AddCommentRequiredArguments creatorId caseDetail.node.id string)
+            , Mutation.addComment
+                { creatorId = creatorId, caseId = caseDetail.node.id, text = string }
+                mapToCommentData
                 |> Graphql.Http.mutationRequest graphQlEndpoint
                 |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewComment caseDetail)
             )
@@ -225,7 +229,7 @@ update msg model =
             in
             ( model
             , Mutation.changeGroup fillInOptionals
-                (Mutation.ChangeGroupRequiredArguments caseDetail.node.id)
+                { caseId = caseDetail.node.id }
                 (SelectionSet.map2 NamedNodeData Group.id Group.name)
                 |> Graphql.Http.mutationRequest graphQlEndpoint
                 |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewGroup caseDetail)
@@ -239,7 +243,7 @@ update msg model =
             in
             ( model
             , Mutation.addDiagnosis
-                (Mutation.AddDiagnosisRequiredArguments creatorId caseDetail.node.id predictionInput)
+                { creatorId = creatorId, caseId = caseDetail.node.id, prediction = predictionInput }
                 mapToDiagnosisDetailData
                 |> Graphql.Http.mutationRequest graphQlEndpoint
                 |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewDiagnosis caseDetail)
@@ -261,7 +265,7 @@ update msg model =
             in
             ( model
             , Mutation.addWager
-                (Mutation.AddWagerRequiredArguments creatorId diagnosisId confidence)
+                { creatorId = creatorId, diagnosisId = diagnosisId, confidence = confidence }
                 mapToWagerData
                 |> Graphql.Http.mutationRequest graphQlEndpoint
                 |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewWager caseDetail)
@@ -283,7 +287,7 @@ update msg model =
             in
             ( model
             , Mutation.judgeOutcome
-                (Mutation.JudgeOutcomeRequiredArguments diagnosisId creatorId outcome)
+                { diagnosisId = diagnosisId, judgedById = creatorId, outcome = outcome }
                 mapToJudgementData
                 |> Graphql.Http.mutationRequest graphQlEndpoint
                 |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewJudgement caseDetail)
@@ -299,7 +303,6 @@ updateCase getUpdatedCase oldCase newData =
         _ ->
             oldCase
     )
-        |> Just
         |> Success
         |> CaseDetail
         |> GotResponse
@@ -392,16 +395,6 @@ displayAuth auth =
         ]
 
 
-displayMaybe : (a -> Html msg) -> Maybe a -> Html msg
-displayMaybe displayFunction data =
-    case data of
-        Just a ->
-            displayFunction a
-
-        Nothing ->
-            div [] [ text "Not found" ]
-
-
 displayData : Model -> Html Msg
 displayData model =
     case model.state of
@@ -412,16 +405,19 @@ displayData model =
             text "No data!"
 
         UserDetail graphqlRemoteData ->
-            viewData (displayMaybe displayUser) graphqlRemoteData
+            viewData displayUser graphqlRemoteData
+
+        ScoreDetail graphqlRemoteData ->
+            viewData displayScores graphqlRemoteData
 
         GroupList graphqlRemoteData ->
             viewData (displayNamedNodeList "/group") graphqlRemoteData
 
         GroupDetail graphqlRemoteData ->
-            viewData (displayMaybe displayGroup) graphqlRemoteData
+            viewData displayGroup graphqlRemoteData
 
         CaseDetail graphqlRemoteData ->
-            viewData (displayMaybe <| displayCase model.auth) graphqlRemoteData
+            viewData (displayCase model.auth) graphqlRemoteData
 
         NewCase caseData ->
             case model.auth of
@@ -466,10 +462,91 @@ displayUser user =
         , dd [] [ displayNamedNodeLink "/user" user.node ]
         , dt [] [ text "Created" ]
         , dd [] [ text <| fromTime user.created ]
+        , dt [] [ text "Score" ]
+        , dd []
+            [ case user.score of
+                Just score ->
+                    a
+                        [ href <|
+                            "/user/"
+                                ++ (case user.node.id of
+                                        Id id ->
+                                            id
+                                   )
+                                ++ "/score"
+                        ]
+                        [ text <| Round.round 4 score ]
+
+                Nothing ->
+                    text "No predictions judged yet"
+            ]
         , dt [] [ text <| "Groups (" ++ String.fromInt (List.length user.groups) ++ ")" ]
         , dd [] [ displayNamedNodeList "/group" user.groups ]
         , dt [] [ text <| "Cases (" ++ String.fromInt (List.length user.cases) ++ ")" ]
         , dd [] [ displayNamedNodeList "/case" user.cases ]
+        ]
+
+
+displayScore : Score -> List (Html msg)
+displayScore score =
+    --let
+    --    ( diagnosisCellElement, outcomeCell, scoreCell ) =
+    --        case score.outcome of
+    --            Determined right brierScore ->
+    --                ( text score.diagnosis
+    --                , [ text
+    --                        (if right then
+    --                            "✔"
+    --
+    --                         else
+    --                            "✗"
+    --                        )
+    --                  ]
+    --                , [ text <| Round.round 4 brierScore ]
+    --                )
+    --
+    --            IndeterminateScore ->
+    --                ( Html.s [] [ text score.diagnosis ], [], [] )
+    --in
+    [ td [] [ text <| Iso8601.fromTime score.judged ]
+    , td [] [ displayNamedNodeLink "/case" score.case_ ]
+    , td [] [ text score.diagnosis ]
+    , td [] [ text <| String.fromInt score.confidence ++ "%" ]
+    , td []
+        [ text
+            (case score.outcome of
+                Right ->
+                    "✔"
+
+                Wrong ->
+                    "✗"
+
+                Indeterminate ->
+                    "?"
+            )
+        ]
+    , td [] [ text <| Round.round 4 score.brierScore ]
+    , td [] [ text <| Round.round 4 score.averageBrierScore ]
+    , td [] [ text <| Round.round 4 score.adjustedBrierScore ]
+    ]
+
+
+displayScores : ScoresListData -> Html msg
+displayScores scores =
+    table []
+        [ thead []
+            [ tr []
+                [ th [] [ text "Judged" ]
+                , th [] [ text "Case" ]
+                , th [] [ text "Diagnosis" ]
+                , th [] [ text "Confidence" ]
+                , th [] [ text "Outcome" ]
+                , th [] [ text "Brier score" ]
+                , th [] [ text "Running average Brier score" ]
+                , th [] [ text "Running adjusted Brier score" ]
+                ]
+            ]
+        , tbody [] <| List.map (displayScore >> tr []) scores
         ]
 
 
@@ -699,7 +776,7 @@ displayNewDiagnosis auth caseDetail =
 
 changeCase : CaseDetailData -> Msg
 changeCase newCase =
-    newCase |> Just >> Success >> CaseDetail >> GotResponse
+    newCase |> Success >> CaseDetail >> GotResponse
 
 
 displayNewComment : Auth -> CaseDetailData -> List (Html Msg)
@@ -951,7 +1028,7 @@ determineSelected selectedId id =
     selectedId == Just id
 
 
-displayGroupSelect : Maybe Id -> GroupListResponse -> (Maybe Id -> Msg) -> Html Msg
+displayGroupSelect : Maybe Id -> List NamedNodeData -> (Maybe Id -> Msg) -> Html Msg
 displayGroupSelect currentGroupId groups msgFn =
     let
         getNewGroupId string =
@@ -994,6 +1071,7 @@ displayNewForm user caseData =
 type Route
     = Welcome
     | User Id
+    | UserScore Id
     | Groups
     | Group Id
     | Case Id
@@ -1005,6 +1083,7 @@ routeParser =
     oneOf
         [ map Welcome top
         , map (User << Id) <| s "user" </> string
+        , map (UserScore << Id) <| s "user" </> string </> s "score"
         , map Groups <| s "groups"
         , map (Group << Id) <| s "group" </> string
         , map (Case << Id) <| s "case" </> string
@@ -1023,6 +1102,11 @@ parseUrlAndRequest model url =
                 User id ->
                     ( model
                     , Query.user { id = id } mapToUserDetailData |> makeRequest (UserDetail >> GotResponse)
+                    )
+
+                UserScore userId ->
+                    ( model
+                    , Query.user { id = userId } (User.scores <| mapToScore) |> makeRequest (ScoreDetail >> GotResponse)
                     )
 
                 Groups ->
@@ -1122,22 +1206,9 @@ prepareCaseInput caseData =
 
 submitCase : CaseInput -> Cmd Msg
 submitCase caseData =
-    caseData
-        |> Mutation.AddCaseRequiredArguments
-        |> Mutation.addCase
+    Mutation.addCase { caseInput = caseData }
         |> Graphql.Http.mutationRequest graphQlEndpoint
         |> Graphql.Http.send (RemoteData.fromResult >> CaseCreated)
-
-
-
---
---
---submitComment : Mutation.AddCommentRequiredArguments -> Cmd Msg
---submitComment comment =
---    Mutation.addComment comment
---        |> Graphql.Http.mutationRequest graphQlEndpoint
---        |> Graphql.Http.send (RemoteData.fromResult >> CommentCreated)
---
 
 
 type alias NamedNodeData =
@@ -1155,15 +1226,17 @@ type alias UserCandidate =
 type alias UserDetailData =
     { node : NamedNodeData
     , created : Timestamp
+    , score : Maybe Float
     , groups : List NamedNodeData
     , cases : List CaseLimitedData
     }
 
 
 mapToUserDetailData =
-    SelectionSet.map4 UserDetailData
+    SelectionSet.map5 UserDetailData
         (SelectionSet.map2 NamedNodeData User.id User.name)
         User.created
+        (User.score { adjusted = False })
         (User.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name)
         (User.cases <| SelectionSet.map2 NamedNodeData Case.id Case.reference)
 
@@ -1184,6 +1257,34 @@ userListQuery =
             (User.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name)
 
 
+type alias Score =
+    { judged : Timestamp
+    , case_ : NamedNodeData
+    , diagnosis : String
+    , confidence : Int
+    , outcome : Outcome
+    , brierScore : Float
+    , averageBrierScore : Float
+    , adjustedBrierScore : Float
+    }
+
+
+type alias ScoresListData =
+    List Score
+
+
+mapToScore =
+    SelectionSet.map8 Score
+        Score.judged
+        (SelectionSet.map2 NamedNodeData Score.caseId Score.reference)
+        Score.diagnosis
+        Score.confidence
+        Score.outcome
+        Score.brierScore
+        Score.averageBrierScore
+        Score.adjustedBrierScore
+
+
 type alias GroupDetailData =
     { node : NamedNodeData
     , members : List NamedNodeData
@@ -1196,14 +1297,6 @@ mapToGroupDetailData =
         (SelectionSet.map2 NamedNodeData Group.id Group.name)
         (Group.members <| SelectionSet.map2 NamedNodeData User.id User.name)
         (Group.cases <| SelectionSet.map2 NamedNodeData Case.id Case.reference)
-
-
-type alias GroupDetailResponse =
-    Maybe GroupDetailData
-
-
-type alias GroupListResponse =
-    List NamedNodeData
 
 
 type alias CaseLimitedData =
