@@ -100,24 +100,32 @@ type alias Model =
 
 
 type Auth
-    = SignedIn (List UserCandidate) UserCandidate
-    | SignedOut (List UserCandidate)
+    = SignedIn (List NamedNodeData) UserCandidate
+    | SignedOut (List NamedNodeData)
 
 
-usersResponseHandler : Url.Url -> GraphqlRemoteData UserListResponse -> Msg
-usersResponseHandler url response =
-    GotAuth url <|
+newUserResponseHandler : GraphqlRemoteData Auth -> Msg
+newUserResponseHandler response =
+    UserChanged <|
         case response of
-            Success users ->
-                case List.head users of
-                    Just a ->
-                        SignedIn users a
-
-                    Nothing ->
-                        SignedOut users
+            Success auth ->
+                auth
 
             _ ->
                 SignedOut []
+
+
+usersResponseHandler : Url.Url -> GraphqlRemoteData (List NamedNodeData) -> Msg
+usersResponseHandler url response =
+    GotAuth url <|
+        SignedOut
+            (case response of
+                Success users ->
+                    users
+
+                _ ->
+                    []
+            )
 
 
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
@@ -136,6 +144,7 @@ type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
     | GotAuth Url.Url Auth
+    | GrabNewUser Id
     | UserChanged Auth
     | GotResponse State
     | ChangeNewCase CaseData
@@ -168,6 +177,18 @@ update msg model =
 
         GotAuth url auth ->
             parseUrlAndRequest { model | auth = auth } url
+
+        GrabNewUser id ->
+            ( model
+            , SelectionSet.map2 SignedIn
+                (Query.users <| SelectionSet.map2 NamedNodeData User.id User.name)
+                (Query.user { id = id } <|
+                    SelectionSet.map2 UserCandidate
+                        (SelectionSet.map2 NamedNodeData User.id User.name)
+                        (User.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name)
+                )
+                |> makeRequest newUserResponseHandler
+            )
 
         UserChanged auth ->
             --( { model | auth = auth, state = NoData }
@@ -347,7 +368,7 @@ view model =
     }
 
 
-determineNewAuth : Auth -> String -> Auth
+determineNewAuth : Auth -> String -> Msg
 determineNewAuth auth id =
     let
         users =
@@ -358,19 +379,19 @@ determineNewAuth auth id =
                 SignedOut a ->
                     a
     in
-    case List.filter (\user -> user.node.id == Id id) users of
+    case List.filter (\user -> user.id == Id id) users of
         [ newUser ] ->
-            SignedIn users newUser
+            GrabNewUser newUser.id
 
         _ ->
-            SignedOut users
+            UserChanged <| SignedOut users
 
 
 displayAuth : Auth -> Html Msg
 displayAuth auth =
     div []
         [ label [] [ text "Select current user: " ]
-        , select [ onInput <| determineNewAuth auth >> UserChanged ] <|
+        , select [ onInput <| determineNewAuth auth ] <|
             List.map
                 (determineSelected
                     (case auth of
@@ -384,14 +405,13 @@ displayAuth auth =
                 )
             <|
                 NamedNodeData (Id "") "<No user>"
-                    :: List.map (\user -> user.node)
-                        (case auth of
+                    :: (case auth of
                             SignedIn users _ ->
                                 users
 
                             SignedOut users ->
                                 users
-                        )
+                       )
         ]
 
 
@@ -627,7 +647,7 @@ displayCase auth caseDetail =
         , dd []
             [ ul [] <|
                 displayListItems displayComment caseDetail.comments
-                    ++ displayNewComment auth caseDetail
+                    ++ [ li [] <| displayNewComment auth caseDetail ]
             ]
         ]
 
@@ -1245,16 +1265,9 @@ type alias UserDetailResponse =
     Maybe UserDetailData
 
 
-type alias UserListResponse =
-    List UserCandidate
-
-
-userListQuery : SelectionSet UserListResponse RootQuery
+userListQuery : SelectionSet (List NamedNodeData) RootQuery
 userListQuery =
-    Query.users <|
-        SelectionSet.map2 UserCandidate
-            (SelectionSet.map2 NamedNodeData User.id User.name)
-            (User.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name)
+    Query.users <| SelectionSet.map2 NamedNodeData User.id User.name
 
 
 type alias Score =
