@@ -2,13 +2,14 @@ module Main exposing (main)
 
 import Browser exposing (Document)
 import Browser.Navigation as Nav
+import FormField exposing (Field)
 import Graphql.Http exposing (Error, HttpError(..), Request)
 import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, viewData)
 import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, form, h4, hr, input, label, li, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (disabled, href, placeholder, required, selected, step, style, type_, value)
+import Html.Attributes exposing (disabled, href, placeholder, required, selected, step, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
 import Iso8601 exposing (fromTime)
 import Predictions.Enum.Outcome exposing (Outcome(..))
@@ -54,29 +55,16 @@ main =
 
 
 type alias PredictionData =
-    { diagnosis : FormField String
-    , confidence : FormField Int
+    { diagnosis : Field String
+    , confidence : Field Int
     }
-
-
-type alias InputValue =
-    String
-
-
-type alias ValidationMessage =
-    String
-
-
-type FormField a
-    = Valid a InputValue
-    | Invalid ValidationMessage InputValue
 
 
 type alias CaseData =
     { groupId : Maybe Id
-    , reference : FormField String
+    , reference : Field String
     , predictions : List PredictionData
-    , deadline : FormField Timestamp
+    , deadline : Field Timestamp
     }
 
 
@@ -148,7 +136,7 @@ type Msg
     | UserChanged Auth
     | GotResponse State
     | ChangeNewCase CaseData
-    | SubmitCase Id CaseInput
+    | SubmitCase CaseInput
     | SubmitComment CaseDetailData Id String
     | SubmitGroup CaseDetailData (Maybe Id)
     | SubmitDiagnosis CaseDetailData Id PredictionInput
@@ -214,8 +202,8 @@ update msg model =
                 _ ->
                     ( model, Cmd.none )
 
-        SubmitCase creatorId caseData ->
-            ( model, submitCase { caseData | creatorId = creatorId } )
+        SubmitCase caseData ->
+            ( model, submitCase caseData )
 
         SubmitComment caseDetail creatorId string ->
             let
@@ -647,7 +635,7 @@ displayCase auth caseDetail =
         , dd []
             [ ul [] <|
                 displayListItems displayComment caseDetail.comments
-                    ++ [ li [] <| displayNewComment auth caseDetail ]
+                    ++ displayNewComment auth caseDetail
             ]
         ]
 
@@ -655,10 +643,6 @@ displayCase auth caseDetail =
 displayDiagnosis : Auth -> CaseDetailData -> DiagnosisDetailData -> List (Html Msg)
 displayDiagnosis auth caseDetail diagnosis =
     let
-        changeWager : String -> Msg
-        changeWager newValue =
-            changeCase { caseDetail | state = AddingWager diagnosis.node.id <| validateConfidence newValue }
-
         judgedAsBy outcome judgedBy =
             [ text " Judged as " ] ++ outcome ++ [ text " by ", displayNamedNodeLink "/user" judgedBy ]
     in
@@ -680,8 +664,13 @@ displayDiagnosis auth caseDetail diagnosis =
                                     []
 
                                  else
+                                    let
+                                        changeWager : Field Int -> Msg
+                                        changeWager field =
+                                            changeCase { caseDetail | state = AddingWager diagnosis.node.id field }
+                                    in
                                     [ button
-                                        [ type_ "button", onClick <| changeWager "" ]
+                                        [ type_ "button", onClick <| changeWager <| FormField.newField validateConfidence ]
                                         [ text "Add wager" ]
                                     ]
                                 )
@@ -709,19 +698,19 @@ displayDiagnosis auth caseDetail diagnosis =
 
                             ( SignedIn _ user, AddingWager id newWager ) ->
                                 let
-                                    ( inputValue, submitButtonDisabled, formAttributes ) =
-                                        case newWager of
-                                            Valid intValue val ->
-                                                ( val, False, [ onSubmit <| SubmitWager caseDetail user.node.id diagnosis.node.id intValue ] )
+                                    ( submitButtonDisabled, formAttributes ) =
+                                        case FormField.getValue newWager of
+                                            Ok confidence ->
+                                                ( False, [ onSubmit <| SubmitWager caseDetail user.node.id diagnosis.node.id confidence ] )
 
-                                            Invalid _ val ->
-                                                ( val, True, [] )
+                                            Err _ ->
+                                                ( True, [] )
                                 in
                                 if id == diagnosis.node.id then
                                     [ form formAttributes
                                         [ displayNamedNodeLink "/user" user.node
                                         , text " estimated "
-                                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", value inputValue, onInput changeWager ] []
+                                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue newWager ] []
                                         , text "%"
                                         , div []
                                             [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
@@ -756,30 +745,30 @@ displayNewDiagnosis auth caseDetail =
 
         ( SignedIn _ user, AddingDiagnosis prediction ) ->
             let
+                changePrediction newPrediction =
+                    changeCase { caseDetail | state = AddingDiagnosis newPrediction }
+
+                changeDiagnosis diagnosis =
+                    changePrediction { prediction | diagnosis = diagnosis }
+
+                changeConfidence confidence =
+                    changePrediction { prediction | confidence = confidence }
+
                 ( submitButtonDisabled, formAttributes ) =
-                    case ( prediction.diagnosis, prediction.confidence ) of
-                        ( Valid diagnosis _, Valid confidence _ ) ->
+                    case ( FormField.getValue prediction.diagnosis, FormField.getValue prediction.confidence ) of
+                        ( Ok diagnosis, Ok confidence ) ->
                             ( False, [ onSubmit <| SubmitDiagnosis caseDetail user.node.id <| PredictionInput diagnosis confidence ] )
 
                         _ ->
                             ( True, [] )
-
-                changePrediction newPrediction =
-                    changeCase { caseDetail | state = AddingDiagnosis newPrediction }
-
-                changeDiagnosis newValue =
-                    changePrediction { prediction | diagnosis = validateDiagnosis newValue }
-
-                changeConfidence newValue =
-                    changePrediction { prediction | confidence = validateConfidence newValue }
             in
             [ form formAttributes
-                [ h4 [] [ input [ type_ "text", placeholder "Diagnosis", value <| getInputValue prediction.diagnosis, onInput changeDiagnosis ] [] ]
+                [ h4 [] [ input [ type_ "text", placeholder "Diagnosis", FormField.withValue prediction.diagnosis, FormField.onInput changeDiagnosis prediction.diagnosis ] [] ]
                 , ul []
                     [ li []
                         [ displayNamedNodeLink "/user" user.node
                         , text " estimated "
-                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", value <| getInputValue prediction.confidence, onInput changeConfidence ] []
+                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue prediction.confidence, FormField.onInput changeConfidence prediction.confidence ] []
                         , text "%"
                         ]
                     ]
@@ -802,24 +791,35 @@ changeCase newCase =
 displayNewComment : Auth -> CaseDetailData -> List (Html Msg)
 displayNewComment auth caseDetail =
     let
-        changeComment : String -> Msg
-        changeComment newComment =
-            changeCase { caseDetail | state = AddingComment newComment }
+        changeComment : Field String -> Msg
+        changeComment comment =
+            changeCase { caseDetail | state = AddingComment comment }
     in
     case ( auth, caseDetail.state ) of
-        ( SignedIn _ user, AddingComment string ) ->
-            [ displayNamedNodeLink "/user" user.node
-            , blockquote []
-                [ form [ onSubmit <| SubmitComment caseDetail user.node.id string ]
-                    [ input [ type_ "text", placeholder "Enter comment", onInput changeComment, value string ] []
-                    , button [ type_ "submit", disabled << String.isEmpty << String.trim <| string ] [ text "Submit" ]
-                    , cancelEditButton caseDetail
+        ( SignedIn _ user, AddingComment newComment ) ->
+            let
+                ( submitButtonDisabled, formAttributes ) =
+                    case FormField.getValue newComment of
+                        Ok comment ->
+                            ( False, [ onSubmit <| SubmitComment caseDetail user.node.id comment ] )
+
+                        Err _ ->
+                            ( True, [] )
+            in
+            [ li []
+                [ displayNamedNodeLink "/user" user.node
+                , blockquote []
+                    [ form formAttributes
+                        [ input [ type_ "text", placeholder "Enter comment", FormField.withValue newComment, FormField.onInput changeComment newComment ] []
+                        , button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
+                        , cancelEditButton caseDetail
+                        ]
                     ]
                 ]
             ]
 
         ( SignedIn _ _, Viewing ) ->
-            [ button [ onClick <| changeComment "" ] [ text "Add comment" ] ]
+            [ li [] [ button [ onClick <| changeComment <| FormField.newNonEmptyStringField "Comment" ] [ text "Add comment" ] ] ]
 
         _ ->
             []
@@ -856,111 +856,77 @@ displayOutcome outcome =
         )
 
 
-validateNonEmptyField : String -> InputValue -> FormField String
-validateNonEmptyField fieldName inputValue =
+
+--validateNonEmptyField : String -> InputValue -> Field String
+--validateNonEmptyField fieldName inputValue =
+--    let
+--        trimmed =
+--            String.trim inputValue
+--    in
+--    inputValue
+--        |> (if String.isEmpty trimmed then
+--                Invalid (fieldName ++ " is required")
+--
+--            else
+--                Valid trimmed
+--           )
+
+
+validateDeadline : String -> Result String Time.Posix
+validateDeadline deadline =
     let
-        trimmed =
-            String.trim inputValue
+        errorMapper _ =
+            "Could not parse as ISO-8601 datetime string"
     in
-    inputValue
-        |> (if String.isEmpty trimmed then
-                Invalid (fieldName ++ " is required")
+    Result.mapError errorMapper <| Iso8601.toTime deadline
+
+
+validateConfidence : String -> Result String Int
+validateConfidence confidence =
+    case String.toInt confidence of
+        Just a ->
+            if a < 0 then
+                Err "Minimum confidence is 0%"
+
+            else if a > 100 then
+                Err "Maximum confidence is 100%"
 
             else
-                Valid trimmed
-           )
+                Ok a
 
-
-changeNewReference : CaseData -> String -> Msg
-changeNewReference caseData reference =
-    ChangeNewCase { caseData | reference = validateReference reference }
-
-
-validateDeadline : InputValue -> FormField Time.Posix
-validateDeadline deadline =
-    deadline
-        |> (case Iso8601.toTime deadline of
-                Ok value ->
-                    Valid value
-
-                _ ->
-                    Invalid "Could not parse as ISO-8601 datetime string"
-           )
-
-
-changeNewDeadline : CaseData -> String -> Msg
-changeNewDeadline caseData deadline =
-    ChangeNewCase { caseData | deadline = validateDeadline deadline }
-
-
-blankPrediction =
-    PredictionData (validateDiagnosis "") (validateConfidence "")
-
-
-addNewLine : CaseData -> Msg
-addNewLine caseData =
-    ChangeNewCase { caseData | predictions = caseData.predictions ++ [ blankPrediction ] }
-
-
-changeNewPrediction : Int -> PredictionData -> CaseData -> Msg
-changeNewPrediction index newPrediction caseData =
-    ChangeNewCase { caseData | predictions = List.take index caseData.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseData.predictions }
-
-
-validateDiagnosis =
-    validateNonEmptyField "Diagnosis"
-
-
-validateReference =
-    validateNonEmptyField "Case reference"
-
-
-changeNewDiagnosis : Int -> PredictionData -> CaseData -> String -> Msg
-changeNewDiagnosis index oldPrediction caseData diagnosis =
-    changeNewPrediction index { oldPrediction | diagnosis = validateDiagnosis diagnosis } caseData
-
-
-validateConfidence : InputValue -> FormField Int
-validateConfidence confidence =
-    confidence
-        |> (case String.toInt confidence of
-                Just a ->
-                    if a < 0 then
-                        Invalid "Minimum confidence is 0%"
-
-                    else if a > 100 then
-                        Invalid "Maximum confidence is 100%"
-
-                    else
-                        Valid a
-
-                Nothing ->
-                    Invalid "Enter an integer from 0 to 100"
-           )
-
-
-changeNewConfidence : Int -> PredictionData -> CaseData -> String -> Msg
-changeNewConfidence index oldPrediction caseData confidence =
-    changeNewPrediction index { oldPrediction | confidence = validateConfidence confidence } caseData
-
-
-changeNewPredictionRemove : Int -> CaseData -> Msg
-changeNewPredictionRemove index caseData =
-    ChangeNewCase { caseData | predictions = List.take index caseData.predictions ++ List.drop (index + 1) caseData.predictions }
+        Nothing ->
+            Err "Enter an integer from 0 to 100"
 
 
 displayPrediction : CaseData -> Int -> PredictionData -> Html Msg
 displayPrediction caseData index prediction =
+    let
+        removeNewPrediction : Msg
+        removeNewPrediction =
+            ChangeNewCase { caseData | predictions = List.take index caseData.predictions ++ List.drop (index + 1) caseData.predictions }
+
+        changeNewPrediction : PredictionData -> Msg
+        changeNewPrediction newPrediction =
+            ChangeNewCase { caseData | predictions = List.take index caseData.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseData.predictions }
+
+        changeNewDiagnosis : Field String -> Msg
+        changeNewDiagnosis diagnosis =
+            changeNewPrediction { prediction | diagnosis = diagnosis }
+
+        changeNewConfidence : Field Int -> Msg
+        changeNewConfidence confidence =
+            changeNewPrediction { prediction | confidence = confidence }
+    in
     fieldset []
         [ div []
             [ label [] [ text "Diagnosis: " ]
             , input
                 [ required True
-                , value <| getInputValue prediction.diagnosis
-                , onInput (changeNewDiagnosis index prediction caseData)
+                , FormField.withValue prediction.diagnosis
+                , FormField.onInput changeNewDiagnosis prediction.diagnosis
                 ]
                 []
-            , displayValidity prediction.diagnosis
+            , FormField.displayValidity prediction.diagnosis
             ]
         , div []
             [ label [] [ text "Confidence (%): " ]
@@ -969,13 +935,13 @@ displayPrediction caseData index prediction =
                 , step "1"
                 , Html.Attributes.min "0"
                 , Html.Attributes.max "100"
-                , value <| getInputValue prediction.confidence
-                , onInput (changeNewConfidence index prediction caseData)
+                , FormField.withValue prediction.confidence
+                , FormField.onInput changeNewConfidence prediction.confidence
                 ]
                 []
-            , displayValidity prediction.confidence
+            , FormField.displayValidity prediction.confidence
             ]
-        , button [ onClick (changeNewPredictionRemove index caseData), disabled <| List.length caseData.predictions == 1 ] [ text "➖" ]
+        , button [ onClick removeNewPrediction, disabled <| List.length caseData.predictions <= 1 ] [ text "➖" ]
         ]
 
 
@@ -987,26 +953,6 @@ printPrediction prediction =
         , dt [] [ text "Confidence" ]
         , dd [] [ text <| String.fromInt prediction.confidence ++ "%" ]
         ]
-
-
-getInputValue : FormField a -> InputValue
-getInputValue field =
-    case field of
-        Valid _ value ->
-            value
-
-        Invalid _ value ->
-            value
-
-
-displayValidity : FormField a -> Html Msg
-displayValidity field =
-    case field of
-        Valid _ _ ->
-            span [ style "background-color" "green", style "color" "white" ] [ text "✓" ]
-
-        Invalid validationMessage _ ->
-            span [ style "background-color" "red", style "color" "white" ] [ text ("✗ " ++ validationMessage) ]
 
 
 displayDebug : CaseInput -> Html Msg
@@ -1065,19 +1011,36 @@ displayGroupSelect currentGroupId groups msgFn =
                 :: groups
 
 
+blankPrediction =
+    PredictionData (FormField.newNonEmptyStringField "Diagnosis") (FormField.newField validateConfidence)
+
+
 displayNewForm : UserCandidate -> CaseData -> Html Msg
 displayNewForm user caseData =
+    let
+        changeNewReference : Field String -> Msg
+        changeNewReference reference =
+            ChangeNewCase { caseData | reference = reference }
+
+        changeNewDeadline : Field Timestamp -> Msg
+        changeNewDeadline deadline =
+            ChangeNewCase { caseData | deadline = deadline }
+
+        addNewLine : Msg
+        addNewLine =
+            ChangeNewCase { caseData | predictions = caseData.predictions ++ [ blankPrediction ] }
+    in
     div [] <|
         fieldset []
-            [ div [] [ label [] [ text "Case reference: " ], input [ required True, value <| getInputValue caseData.reference, onInput (changeNewReference caseData) ] [], displayValidity caseData.reference ]
-            , div [] [ label [] [ text "Deadline: " ], input [ required True, type_ "datetime-local", value <| getInputValue caseData.deadline, onInput (changeNewDeadline caseData) ] [], displayValidity caseData.deadline ]
+            [ div [] [ label [] [ text "Case reference: " ], input [ required True, FormField.withValue caseData.reference, FormField.onInput changeNewReference caseData.reference ] [], FormField.displayValidity caseData.reference ]
+            , div [] [ label [] [ text "Deadline: " ], input [ required True, type_ "datetime-local", FormField.withValue caseData.deadline, FormField.onInput changeNewDeadline caseData.deadline ] [], FormField.displayValidity caseData.deadline ]
             , div [] [ label [] [ text "Group: " ], displayGroupSelect caseData.groupId user.groups <| caseGroupChanged caseData ]
             ]
             :: List.indexedMap (displayPrediction caseData) caseData.predictions
-            ++ [ fieldset [] [ button [ onClick (addNewLine caseData) ] [ text "➕" ] ] ]
-            ++ (case prepareCaseInput caseData of
+            ++ [ fieldset [] [ button [ onClick addNewLine ] [ text "➕" ] ] ]
+            ++ (case prepareCaseInput user.node.id caseData of
                     Just caseInput ->
-                        [ displayDebug caseInput, button [ onClick <| SubmitCase user.node.id caseInput ] [ text "Submit" ] ]
+                        [ displayDebug caseInput, button [ onClick <| SubmitCase caseInput ] [ text "Submit" ] ]
 
                     _ ->
                         []
@@ -1152,9 +1115,9 @@ parseUrlAndRequest model url =
                                     NewCase <|
                                         CaseData
                                             Nothing
-                                            (validateReference "")
+                                            (FormField.newNonEmptyStringField "Case reference")
                                             [ blankPrediction ]
-                                            (validateDeadline "")
+                                            (FormField.newField validateDeadline)
                               }
                             , Cmd.none
                             )
@@ -1176,51 +1139,41 @@ parseUrlAndRequest model url =
 
 preparePredictionInput : PredictionData -> Maybe PredictionInput
 preparePredictionInput prediction =
-    case prediction.diagnosis of
-        Valid diagnosis _ ->
-            case prediction.confidence of
-                Valid confidence _ ->
-                    Just <| PredictionInput diagnosis confidence
+    case ( FormField.getValue prediction.diagnosis, FormField.getValue prediction.confidence ) of
+        ( Ok diagnosis, Ok confidence ) ->
+            Just <| PredictionInput diagnosis confidence
 
-                Invalid _ _ ->
-                    Nothing
-
-        Invalid _ _ ->
+        _ ->
             Nothing
 
 
-prepareCaseInput : CaseData -> Maybe CaseInput
-prepareCaseInput caseData =
-    case caseData.reference of
-        Valid reference _ ->
-            case caseData.deadline of
-                Valid deadline _ ->
-                    let
-                        predictions =
-                            List.filterMap preparePredictionInput caseData.predictions
-                    in
-                    if List.isEmpty predictions || List.length predictions /= List.length caseData.predictions then
-                        Nothing
+prepareCaseInput : Id -> CaseData -> Maybe CaseInput
+prepareCaseInput userId caseData =
+    case ( FormField.getValue caseData.reference, FormField.getValue caseData.deadline ) of
+        ( Ok reference, Ok deadline ) ->
+            let
+                predictions =
+                    List.filterMap preparePredictionInput caseData.predictions
+            in
+            if List.isEmpty predictions || List.length predictions /= List.length caseData.predictions then
+                Nothing
 
-                    else
-                        Just <|
-                            CaseInput
-                                reference
-                                (Id "")
-                                (case caseData.groupId of
-                                    Just id ->
-                                        Present id
+            else
+                Just <|
+                    CaseInput
+                        reference
+                        userId
+                        (case caseData.groupId of
+                            Just id ->
+                                Present id
 
-                                    Nothing ->
-                                        Absent
-                                )
-                                deadline
-                                predictions
+                            Nothing ->
+                                Absent
+                        )
+                        deadline
+                        predictions
 
-                Invalid _ _ ->
-                    Nothing
-
-        Invalid _ _ ->
+        _ ->
             Nothing
 
 
@@ -1342,9 +1295,9 @@ type CaseDetailState
     = Viewing
     | ChangingGroup (List NamedNodeData)
     | AddingDiagnosis PredictionData
-    | AddingWager Id (FormField Int)
+    | AddingWager Id (Field Int)
     | Judging Id
-    | AddingComment String
+    | AddingComment (Field String)
 
 
 type alias CaseDetailData =
