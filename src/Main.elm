@@ -7,7 +7,7 @@ import Graphql.Http exposing (Error, HttpError(..), Request)
 import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
-import Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, validateConfidence, viewData)
+import Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, validateConfidence, validateDeadline, viewData)
 import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
 import Html.Attributes exposing (disabled, href, placeholder, selected, step, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
@@ -123,6 +123,7 @@ type Msg
     | UpdateCase NewCase.Data
     | SubmitCase CaseInput
     | SubmitComment CaseDetailData Id String
+    | SubmitDeadline CaseDetailData Timestamp
     | SubmitGroup CaseDetailData (Maybe Id)
     | SubmitDiagnosis CaseDetailData Id PredictionInput
     | SubmitWager CaseDetailData Id Id Int
@@ -202,6 +203,19 @@ update msg model =
                 mapToCommentData
                 |> Graphql.Http.mutationRequest graphQlEndpoint
                 |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewComment caseDetail)
+            )
+
+        SubmitDeadline caseDetail deadline ->
+            let
+                withNewDeadline : Timestamp -> CaseDetailData
+                withNewDeadline newDeadline =
+                    { caseDetail | deadline = newDeadline }
+            in
+            ( model
+            , Mutation.changeDeadline
+                { caseId = caseDetail.node.id, newDeadline = deadline }
+                |> Graphql.Http.mutationRequest graphQlEndpoint
+                |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewDeadline caseDetail)
             )
 
         SubmitGroup caseDetail groupId ->
@@ -479,7 +493,7 @@ displayUser user =
 
 displayScore : Score -> List (Html msg)
 displayScore score =
-    [ td [] [ text <| Iso8601.fromTime score.judged ]
+    [ td [] [ text <| fromTime score.judged ]
     , td [] [ displayNamedNodeLink "/case" score.case_ ]
     , td [] [ text score.diagnosis ]
     , td [] [ text <| String.fromInt score.confidence ++ "%" ]
@@ -541,21 +555,13 @@ cancelEditButton caseDetail =
 displayCaseGroup : Auth -> CaseDetailData -> List (Html Msg)
 displayCaseGroup auth caseDetail =
     let
-        viewGroup =
+        ( viewGroup, groupId ) =
             case caseDetail.group of
                 Just g ->
-                    displayNamedNodeLink "/group" g
+                    ( [ displayNamedNodeLink "/group" g ], Just g.id )
 
                 Nothing ->
-                    text "None"
-
-        groupId =
-            case caseDetail.group of
-                Just g ->
-                    Just g.id
-
-                Nothing ->
-                    Nothing
+                    ( [ text "None" ], Nothing )
     in
     case auth of
         SignedIn _ user ->
@@ -567,18 +573,66 @@ displayCaseGroup auth caseDetail =
                         ]
 
                     Viewing ->
-                        [ div [] [ viewGroup ]
+                        [ div [] viewGroup
                         , div [] [ button [ onClick <| changeCase { caseDetail | state = ChangingGroup user.groups } ] [ text "Change" ] ]
                         ]
 
                     _ ->
-                        [ viewGroup ]
+                        viewGroup
 
             else
-                [ viewGroup ]
+                viewGroup
 
         _ ->
-            [ viewGroup ]
+            viewGroup
+
+
+displayDeadline : Auth -> CaseDetailData -> List (Html Msg)
+displayDeadline auth caseDetail =
+    let
+        viewDeadline =
+            [ text <| fromTime caseDetail.deadline ]
+    in
+    case auth of
+        SignedIn _ user ->
+            if user.node.id == caseDetail.creator.id then
+                case caseDetail.state of
+                    ChangingDeadline newDeadline ->
+                        let
+                            changeDeadline : Field Timestamp -> Msg
+                            changeDeadline deadline =
+                                changeCase { caseDetail | state = ChangingDeadline deadline }
+
+                            ( submitButtonDisabled, formAttributes ) =
+                                case FormField.getValue newDeadline of
+                                    Ok deadline ->
+                                        ( False, [ onSubmit <| SubmitDeadline caseDetail deadline ] )
+
+                                    Err _ ->
+                                        ( True, [] )
+                        in
+                        [ form formAttributes
+                            [ input [ type_ "datetime-local", FormField.withValue newDeadline, FormField.onInput changeDeadline newDeadline ] []
+                            , div []
+                                [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
+                                , cancelEditButton caseDetail
+                                ]
+                            ]
+                        ]
+
+                    Viewing ->
+                        [ div [] viewDeadline
+                        , div [] [ button [ onClick <| changeCase { caseDetail | state = ChangingDeadline <| FormField.newField validateDeadline } ] [ text "Change" ] ]
+                        ]
+
+                    _ ->
+                        viewDeadline
+
+            else
+                viewDeadline
+
+        SignedOut _ ->
+            viewDeadline
 
 
 displayCase : Auth -> CaseDetailData -> Html Msg
@@ -587,7 +641,7 @@ displayCase auth caseDetail =
         [ dt [] [ text "Reference" ]
         , dd [] [ displayNamedNodeLink "/case" caseDetail.node ]
         , dt [] [ text "Deadline" ]
-        , dd [] [ text <| fromTime caseDetail.deadline ]
+        , dd [] <| displayDeadline auth caseDetail
         , dt [] [ text "Creator" ]
         , dd [] [ displayNamedNodeLink "/user" caseDetail.creator ]
         , dt [] [ text "Group" ]
@@ -1000,6 +1054,7 @@ mapToCommentData =
 
 type CaseDetailState
     = Viewing
+    | ChangingDeadline (Field Timestamp)
     | ChangingGroup (List NamedNodeData)
     | AddingDiagnosis PredictionData
     | AddingWager Id (Field Int)

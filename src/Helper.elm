@@ -13,8 +13,8 @@ import Json.Decode as Decode
 import List exposing (map)
 import Predictions.Scalar exposing (Id(..))
 import RemoteData exposing (RemoteData)
+import ScalarCodecs exposing (Timestamp)
 import String exposing (fromInt)
-import Time
 
 
 viewData : (a -> Html msg) -> GraphqlRemoteData a -> Html msg
@@ -173,7 +173,7 @@ displayGroupSelect currentGroupId groups onGroupChanged =
             :: List.map mapToOption groups
 
 
-validateDeadline : String -> Result String Time.Posix
+validateDeadline : String -> Result String Timestamp
 validateDeadline deadline =
     let
         errorMapper _ =
