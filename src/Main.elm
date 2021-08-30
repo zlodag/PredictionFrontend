@@ -7,11 +7,12 @@ import Graphql.Http exposing (Error, HttpError(..), Request)
 import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
-import Helper exposing (GraphqlRemoteData, viewData)
-import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, fieldset, form, h4, hr, input, label, li, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (disabled, href, placeholder, required, selected, step, type_, value)
+import Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, validateConfidence, viewData)
+import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
+import Html.Attributes exposing (disabled, href, placeholder, selected, step, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
 import Iso8601 exposing (fromTime)
+import NewCase
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.InputObject exposing (CaseInput, PredictionInput)
 import Predictions.Mutation as Mutation
@@ -29,7 +30,6 @@ import RemoteData exposing (RemoteData(..))
 import Round
 import ScalarCodecs exposing (Id, Timestamp)
 import String
-import Time
 import Url
 import Url.Parser exposing ((</>), Parser, map, oneOf, s, string, top)
 
@@ -54,20 +54,6 @@ main =
 -- MODEL
 
 
-type alias PredictionData =
-    { diagnosis : Field String
-    , confidence : Field Int
-    }
-
-
-type alias CaseData =
-    { groupId : Maybe Id
-    , reference : Field String
-    , predictions : List PredictionData
-    , deadline : Field Timestamp
-    }
-
-
 type State
     = WelcomePage
     | UserDetail (GraphqlRemoteData UserDetailData)
@@ -75,7 +61,7 @@ type State
     | GroupList (GraphqlRemoteData (List NamedNodeData))
     | GroupDetail (GraphqlRemoteData GroupDetailData)
     | CaseDetail (GraphqlRemoteData CaseDetailData)
-    | NewCase CaseData
+    | NewCase NewCase.Data
     | NoData
 
 
@@ -124,7 +110,6 @@ init _ url key =
 
 
 
---parseUrlAndRequest (Model key NoData Nothing) url
 -- UPDATE
 
 
@@ -135,7 +120,7 @@ type Msg
     | GrabNewUser Id
     | UserChanged Auth
     | GotResponse State
-    | ChangeNewCase CaseData
+    | UpdateCase NewCase.Data
     | SubmitCase CaseInput
     | SubmitComment CaseDetailData Id String
     | SubmitGroup CaseDetailData (Maybe Id)
@@ -189,7 +174,7 @@ update msg model =
             , Cmd.none
             )
 
-        ChangeNewCase caseData ->
+        UpdateCase caseData ->
             ( { model | state = NewCase caseData }
             , Cmd.none
             )
@@ -377,29 +362,26 @@ determineNewAuth auth id =
 
 displayAuth : Auth -> Html Msg
 displayAuth auth =
+    let
+        ( allUsers, isLoggedInUser, loggedOut ) =
+            case auth of
+                SignedIn users currentUser ->
+                    ( users, \userId -> currentUser.node.id == userId, False )
+
+                SignedOut users ->
+                    ( users, always False, True )
+
+        mapToOption : NamedNodeData -> Html msg
+        mapToOption user =
+            case user.id of
+                Id id ->
+                    option [ value id, selected <| isLoggedInUser user.id ] [ text user.name ]
+    in
     div []
         [ label [] [ text "Select current user: " ]
         , select [ onInput <| determineNewAuth auth ] <|
-            List.map
-                (determineSelected
-                    (case auth of
-                        SignedIn _ currentUser ->
-                            Just currentUser.node.id
-
-                        SignedOut _ ->
-                            Nothing
-                    )
-                    |> displayOption
-                )
-            <|
-                NamedNodeData (Id "") "<No user>"
-                    :: (case auth of
-                            SignedIn users _ ->
-                                users
-
-                            SignedOut users ->
-                                users
-                       )
+            option [ value "", selected loggedOut ] [ text "<No user>" ]
+                :: List.map mapToOption allUsers
         ]
 
 
@@ -430,7 +412,7 @@ displayData model =
         NewCase caseData ->
             case model.auth of
                 SignedIn _ currentUser ->
-                    displayNewForm currentUser caseData
+                    NewCase.displayNewForm UpdateCase SubmitCase currentUser caseData
 
                 _ ->
                     text "Sign in first"
@@ -497,25 +479,6 @@ displayUser user =
 
 displayScore : Score -> List (Html msg)
 displayScore score =
-    --let
-    --    ( diagnosisCellElement, outcomeCell, scoreCell ) =
-    --        case score.outcome of
-    --            Determined right brierScore ->
-    --                ( text score.diagnosis
-    --                , [ text
-    --                        (if right then
-    --                            "✔"
-    --
-    --                         else
-    --                            "✗"
-    --                        )
-    --                  ]
-    --                , [ text <| Round.round 4 brierScore ]
-    --                )
-    --
-    --            IndeterminateScore ->
-    --                ( Html.s [] [ text score.diagnosis ], [], [] )
-    --in
     [ td [] [ text <| Iso8601.fromTime score.judged ]
     , td [] [ displayNamedNodeLink "/case" score.case_ ]
     , td [] [ text score.diagnosis ]
@@ -857,197 +820,6 @@ displayOutcome outcome =
 
 
 
---validateNonEmptyField : String -> InputValue -> Field String
---validateNonEmptyField fieldName inputValue =
---    let
---        trimmed =
---            String.trim inputValue
---    in
---    inputValue
---        |> (if String.isEmpty trimmed then
---                Invalid (fieldName ++ " is required")
---
---            else
---                Valid trimmed
---           )
-
-
-validateDeadline : String -> Result String Time.Posix
-validateDeadline deadline =
-    let
-        errorMapper _ =
-            "Could not parse as ISO-8601 datetime string"
-    in
-    Result.mapError errorMapper <| Iso8601.toTime deadline
-
-
-validateConfidence : String -> Result String Int
-validateConfidence confidence =
-    case String.toInt confidence of
-        Just a ->
-            if a < 0 then
-                Err "Minimum confidence is 0%"
-
-            else if a > 100 then
-                Err "Maximum confidence is 100%"
-
-            else
-                Ok a
-
-        Nothing ->
-            Err "Enter an integer from 0 to 100"
-
-
-displayPrediction : CaseData -> Int -> PredictionData -> Html Msg
-displayPrediction caseData index prediction =
-    let
-        removeNewPrediction : Msg
-        removeNewPrediction =
-            ChangeNewCase { caseData | predictions = List.take index caseData.predictions ++ List.drop (index + 1) caseData.predictions }
-
-        changeNewPrediction : PredictionData -> Msg
-        changeNewPrediction newPrediction =
-            ChangeNewCase { caseData | predictions = List.take index caseData.predictions ++ [ newPrediction ] ++ List.drop (index + 1) caseData.predictions }
-
-        changeNewDiagnosis : Field String -> Msg
-        changeNewDiagnosis diagnosis =
-            changeNewPrediction { prediction | diagnosis = diagnosis }
-
-        changeNewConfidence : Field Int -> Msg
-        changeNewConfidence confidence =
-            changeNewPrediction { prediction | confidence = confidence }
-    in
-    fieldset []
-        [ div []
-            [ label [] [ text "Diagnosis: " ]
-            , input
-                [ required True
-                , FormField.withValue prediction.diagnosis
-                , FormField.onInput changeNewDiagnosis prediction.diagnosis
-                ]
-                []
-            , FormField.displayValidity prediction.diagnosis
-            ]
-        , div []
-            [ label [] [ text "Confidence (%): " ]
-            , input
-                [ type_ "number"
-                , step "1"
-                , Html.Attributes.min "0"
-                , Html.Attributes.max "100"
-                , FormField.withValue prediction.confidence
-                , FormField.onInput changeNewConfidence prediction.confidence
-                ]
-                []
-            , FormField.displayValidity prediction.confidence
-            ]
-        , button [ onClick removeNewPrediction, disabled <| List.length caseData.predictions <= 1 ] [ text "➖" ]
-        ]
-
-
-printPrediction : PredictionInput -> Html Msg
-printPrediction prediction =
-    dl []
-        [ dt [] [ text "Diagnosis" ]
-        , dd [] [ text prediction.diagnosis ]
-        , dt [] [ text "Confidence" ]
-        , dd [] [ text <| String.fromInt prediction.confidence ++ "%" ]
-        ]
-
-
-displayDebug : CaseInput -> Html Msg
-displayDebug caseInput =
-    dl []
-        [ dt [] [ text "Reference" ]
-        , dd [] [ text caseInput.reference ]
-        , dt [] [ text "Deadline" ]
-        , dd [] [ caseInput.deadline |> Iso8601.fromTime >> String.dropRight 5 |> text ]
-        , dt [] [ text "Group" ]
-        , dd []
-            [ text <|
-                case caseInput.groupId of
-                    Present (Id id) ->
-                        id
-
-                    _ ->
-                        "None"
-            ]
-        , dt [] [ text "Predictions" ]
-        , dd [] [ caseInput.predictions |> List.map (printPrediction >> List.singleton >> li []) |> ul [] ]
-        ]
-
-
-displayOption : (Id -> Bool) -> NamedNodeData -> Html Msg
-displayOption isSelected node =
-    case node.id of
-        Id id ->
-            option [ value id, selected <| isSelected node.id ] [ text node.name ]
-
-
-caseGroupChanged : CaseData -> Maybe Id -> Msg
-caseGroupChanged caseData groupId =
-    ChangeNewCase { caseData | groupId = groupId }
-
-
-determineSelected : Maybe Id -> Id -> Bool
-determineSelected selectedId id =
-    selectedId == Just id
-
-
-displayGroupSelect : Maybe Id -> List NamedNodeData -> (Maybe Id -> Msg) -> Html Msg
-displayGroupSelect currentGroupId groups msgFn =
-    let
-        getNewGroupId string =
-            case List.filter (\group -> group.id == Id string) groups of
-                [ newGroup ] ->
-                    Just newGroup.id
-
-                _ ->
-                    Nothing
-    in
-    select [ onInput <| msgFn << getNewGroupId ] <|
-        List.map (determineSelected currentGroupId |> displayOption) <|
-            NamedNodeData (Id "") "None"
-                :: groups
-
-
-blankPrediction =
-    PredictionData (FormField.newNonEmptyStringField "Diagnosis") (FormField.newField validateConfidence)
-
-
-displayNewForm : UserCandidate -> CaseData -> Html Msg
-displayNewForm user caseData =
-    let
-        changeNewReference : Field String -> Msg
-        changeNewReference reference =
-            ChangeNewCase { caseData | reference = reference }
-
-        changeNewDeadline : Field Timestamp -> Msg
-        changeNewDeadline deadline =
-            ChangeNewCase { caseData | deadline = deadline }
-
-        addNewLine : Msg
-        addNewLine =
-            ChangeNewCase { caseData | predictions = caseData.predictions ++ [ blankPrediction ] }
-    in
-    div [] <|
-        fieldset []
-            [ div [] [ label [] [ text "Case reference: " ], input [ required True, FormField.withValue caseData.reference, FormField.onInput changeNewReference caseData.reference ] [], FormField.displayValidity caseData.reference ]
-            , div [] [ label [] [ text "Deadline: " ], input [ required True, type_ "datetime-local", FormField.withValue caseData.deadline, FormField.onInput changeNewDeadline caseData.deadline ] [], FormField.displayValidity caseData.deadline ]
-            , div [] [ label [] [ text "Group: " ], displayGroupSelect caseData.groupId user.groups <| caseGroupChanged caseData ]
-            ]
-            :: List.indexedMap (displayPrediction caseData) caseData.predictions
-            ++ [ fieldset [] [ button [ onClick addNewLine ] [ text "➕" ] ] ]
-            ++ (case prepareCaseInput user.node.id caseData of
-                    Just caseInput ->
-                        [ displayDebug caseInput, button [ onClick <| SubmitCase caseInput ] [ text "Submit" ] ]
-
-                    _ ->
-                        []
-               )
-
-
-
 -- Parse URL
 
 
@@ -1112,12 +884,7 @@ parseUrlAndRequest model url =
                         SignedIn _ _ ->
                             ( { model
                                 | state =
-                                    NewCase <|
-                                        CaseData
-                                            Nothing
-                                            (FormField.newNonEmptyStringField "Case reference")
-                                            [ blankPrediction ]
-                                            (FormField.newField validateDeadline)
+                                    NewCase NewCase.blankCase
                               }
                             , Cmd.none
                             )
@@ -1137,63 +904,11 @@ parseUrlAndRequest model url =
 -- New
 
 
-preparePredictionInput : PredictionData -> Maybe PredictionInput
-preparePredictionInput prediction =
-    case ( FormField.getValue prediction.diagnosis, FormField.getValue prediction.confidence ) of
-        ( Ok diagnosis, Ok confidence ) ->
-            Just <| PredictionInput diagnosis confidence
-
-        _ ->
-            Nothing
-
-
-prepareCaseInput : Id -> CaseData -> Maybe CaseInput
-prepareCaseInput userId caseData =
-    case ( FormField.getValue caseData.reference, FormField.getValue caseData.deadline ) of
-        ( Ok reference, Ok deadline ) ->
-            let
-                predictions =
-                    List.filterMap preparePredictionInput caseData.predictions
-            in
-            if List.isEmpty predictions || List.length predictions /= List.length caseData.predictions then
-                Nothing
-
-            else
-                Just <|
-                    CaseInput
-                        reference
-                        userId
-                        (case caseData.groupId of
-                            Just id ->
-                                Present id
-
-                            Nothing ->
-                                Absent
-                        )
-                        deadline
-                        predictions
-
-        _ ->
-            Nothing
-
-
 submitCase : CaseInput -> Cmd Msg
 submitCase caseData =
     Mutation.addCase { caseInput = caseData }
         |> Graphql.Http.mutationRequest graphQlEndpoint
         |> Graphql.Http.send (RemoteData.fromResult >> CaseCreated)
-
-
-type alias NamedNodeData =
-    { id : Id
-    , name : String
-    }
-
-
-type alias UserCandidate =
-    { node : NamedNodeData
-    , groups : List NamedNodeData
-    }
 
 
 type alias UserDetailData =
@@ -1283,14 +998,6 @@ mapToCommentData =
         Comment.text
 
 
-
---
---type CaseOwnerGroup
---    = NotOwner NamedNodeData (Maybe NamedNodeData)
---    | OwnerViewing NamedNodeData (Maybe NamedNodeData) (List NamedNodeData)
---    | OwnerEditing NamedNodeData (Maybe NamedNodeData) (List NamedNodeData)
-
-
 type CaseDetailState
     = Viewing
     | ChangingGroup (List NamedNodeData)
@@ -1334,16 +1041,6 @@ type alias DiagnosisDetailData =
     , wagers : List WagerData
     , judgement : Maybe JudgementData
     }
-
-
-
---
---type Judgement
---    = Judged JudgementData
---    | NotJudged
---    | AddingJudgement
---    | AddingWager (FormField Int)
---
 
 
 type alias WagerData =
