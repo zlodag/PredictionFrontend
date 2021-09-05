@@ -15,15 +15,22 @@ import Iso8601 exposing (fromTime)
 import NewCase
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.InputObject exposing (CaseInput, PredictionInput)
+import Predictions.Interface exposing (Event)
+import Predictions.Interface.Event as Event
 import Predictions.Mutation as Mutation
 import Predictions.Object.Case as Case
 import Predictions.Object.Comment as Comment
+import Predictions.Object.CommentActivity
+import Predictions.Object.DeadlineEvent
 import Predictions.Object.Diagnosis as Diagnosis
 import Predictions.Object.Group as Group
+import Predictions.Object.GroupCaseActivity
 import Predictions.Object.Judgement as Judgement
+import Predictions.Object.JudgementActivity
 import Predictions.Object.Score as Score
 import Predictions.Object.User as User
 import Predictions.Object.Wager as Wager
+import Predictions.Object.WagerActivity
 import Predictions.Query as Query
 import Predictions.Scalar exposing (Id(..))
 import RemoteData exposing (RemoteData(..))
@@ -58,6 +65,7 @@ type State
     = WelcomePage
     | UserDetail (GraphqlRemoteData UserDetailData)
     | ScoreDetail (GraphqlRemoteData (List Score))
+    | EventList (GraphqlRemoteData (List EventResult))
     | GroupList (GraphqlRemoteData (List NamedNodeData))
     | GroupDetail (GraphqlRemoteData GroupDetailData)
     | CaseDetail (GraphqlRemoteData CaseDetailData)
@@ -343,6 +351,7 @@ view model =
                             case userCandidate.node.id of
                                 Id userId ->
                                     [ li [] [ a [ href <| "/user/" ++ userId ] [ text "My user page" ] ]
+                                    , li [] [ a [ href <| "/user/" ++ userId ++ "/events" ] [ text "Events" ] ]
                                     , li [] [ a [ href "/new" ] [ text "New prediction" ] ]
                                     ]
 
@@ -413,6 +422,9 @@ displayData model =
 
         ScoreDetail graphqlRemoteData ->
             viewData displayScores graphqlRemoteData
+
+        EventList graphqlRemoteData ->
+            viewData displayEvents graphqlRemoteData
 
         GroupList graphqlRemoteData ->
             viewData (displayNamedNodeList "/group") graphqlRemoteData
@@ -516,7 +528,7 @@ displayScore score =
     ]
 
 
-displayScores : ScoresListData -> Html msg
+displayScores : List Score -> Html msg
 displayScores scores =
     table []
         [ thead []
@@ -533,6 +545,55 @@ displayScores scores =
             ]
         , tbody [] <| List.map (displayScore >> tr []) scores
         ]
+
+
+displayEvent : EventResult -> Html msg
+displayEvent event =
+    li []
+        (case event of
+            WagerActivity activityData diagnosis confidence ->
+                [ text <| Iso8601.fromTime activityData.event.timestamp ++ ": "
+                , displayNamedNodeLink "/user" activityData.user
+                , text <| " added a wager on "
+                , displayNamedNodeLink "/case" activityData.event.case_
+                , text <| ": " ++ diagnosis ++ " (" ++ String.fromInt confidence ++ "%)"
+                ]
+
+            JudgementActivity activityData diagnosis outcome ->
+                [ text <| Iso8601.fromTime activityData.event.timestamp ++ ": "
+                , displayNamedNodeLink "/user" activityData.user
+                , text <| " judged '" ++ diagnosis ++ "' as " ++ displayOutcome outcome ++ " on case: "
+                , displayNamedNodeLink "/case" activityData.event.case_
+                ]
+
+            CommentActivity activityData comment ->
+                [ text <| Iso8601.fromTime activityData.event.timestamp ++ ": "
+                , displayNamedNodeLink "/user" activityData.user
+                , text " commented on "
+                , displayNamedNodeLink "/case" activityData.event.case_
+                , text <| ": '" ++ comment ++ "'"
+                ]
+
+            GroupCaseActivity activityData group ->
+                [ text <| Iso8601.fromTime activityData.event.timestamp ++ ": "
+                , displayNamedNodeLink "/user" activityData.user
+                , text " added a case in group "
+                , displayNamedNodeLink "/group" group
+                , text ": "
+                , displayNamedNodeLink "/case" activityData.event.case_
+                ]
+
+            DeadlineEvent eventData ->
+                [ text <| Iso8601.fromTime eventData.timestamp ++ ": Deadline reached for "
+                , displayNamedNodeLink "/case" eventData.case_
+                , text "!"
+                ]
+        )
+
+
+displayEvents : List EventResult -> Html msg
+displayEvents events =
+    ul [] <| List.map displayEvent events
 
 
 displayGroup : GroupDetailData -> Html msg
@@ -668,24 +729,24 @@ displayDiagnosis auth caseDetail diagnosis =
         displayListItems displayWager diagnosis.wagers
             ++ (case diagnosis.judgement of
                     Just judgementData ->
-                        judgedAsBy [ strong [] [ displayOutcome judgementData.outcome ] ] judgementData.judgedBy
+                        judgedAsBy [ strong [] [ text <| displayOutcome judgementData.outcome ] ] judgementData.judgedBy
                             ++ [ text <| " at " ++ fromTime judgementData.timestamp
                                ]
                             |> li []
                             |> List.singleton
 
                     Nothing ->
+                        let
+                            changeWager : Field Int -> Msg
+                            changeWager field =
+                                changeCase { caseDetail | state = AddingWager diagnosis.node.id field }
+                        in
                         case ( auth, caseDetail.state ) of
                             ( SignedIn _ user, Viewing ) ->
                                 (if List.any (\wager -> wager.creator.id == user.node.id) diagnosis.wagers then
                                     []
 
                                  else
-                                    let
-                                        changeWager : Field Int -> Msg
-                                        changeWager field =
-                                            changeCase { caseDetail | state = AddingWager diagnosis.node.id field }
-                                    in
                                     [ button
                                         [ type_ "button", onClick <| changeWager <| FormField.newField validateConfidence ]
                                         [ text "Add wager" ]
@@ -727,7 +788,7 @@ displayDiagnosis auth caseDetail diagnosis =
                                     [ form formAttributes
                                         [ displayNamedNodeLink "/user" user.node
                                         , text " estimated "
-                                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue newWager ] []
+                                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue newWager, FormField.onInput changeWager newWager ] []
                                         , text "%"
                                         , div []
                                             [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
@@ -858,19 +919,17 @@ displayWager wager =
     ]
 
 
-displayOutcome : Outcome -> Html msg
+displayOutcome : Outcome -> String
 displayOutcome outcome =
-    text
-        (case outcome of
-            Right ->
-                "Right"
+    case outcome of
+        Right ->
+            "Right"
 
-            Wrong ->
-                "Wrong"
+        Wrong ->
+            "Wrong"
 
-            Indeterminate ->
-                "Indeterminate"
-        )
+        Indeterminate ->
+            "Indeterminate"
 
 
 
@@ -881,6 +940,7 @@ type Route
     = Welcome
     | User Id
     | UserScore Id
+    | Events Id
     | Groups
     | Group Id
     | Case Id
@@ -893,6 +953,7 @@ routeParser =
         [ map Welcome top
         , map (User << Id) <| s "user" </> string
         , map (UserScore << Id) <| s "user" </> string </> s "score"
+        , map (Events << Id) <| s "user" </> string </> s "events"
         , map Groups <| s "groups"
         , map (Group << Id) <| s "group" </> string
         , map (Case << Id) <| s "case" </> string
@@ -916,6 +977,58 @@ parseUrlAndRequest model url =
                 UserScore userId ->
                     ( model
                     , Query.user { id = userId } (User.scores <| mapToScore) |> makeRequest (ScoreDetail >> GotResponse)
+                    )
+
+                Events userId ->
+                    let
+                        mapToEventData mapToCaseId mapToCaseReference mapToTimestamp =
+                            SelectionSet.map2 EventData
+                                (SelectionSet.map2 NamedNodeData mapToCaseId mapToCaseReference)
+                                mapToTimestamp
+
+                        mapToActivityData mapToCaseId mapToCaseReference mapToTimestamp mapToUserId mapToUserName =
+                            SelectionSet.map2 ActivityData
+                                (mapToEventData mapToCaseId mapToCaseReference mapToTimestamp)
+                                (SelectionSet.map2 NamedNodeData mapToUserId mapToUserName)
+
+                        mapToWagerActivity =
+                            SelectionSet.map3 WagerActivity
+                                (mapToActivityData Predictions.Object.WagerActivity.caseId Predictions.Object.WagerActivity.caseReference Predictions.Object.WagerActivity.timestamp Predictions.Object.WagerActivity.userId Predictions.Object.WagerActivity.userName)
+                                Predictions.Object.WagerActivity.diagnosis
+                                Predictions.Object.WagerActivity.confidence
+
+                        mapToJudgementActivity =
+                            SelectionSet.map3 JudgementActivity
+                                (mapToActivityData Predictions.Object.JudgementActivity.caseId Predictions.Object.JudgementActivity.caseReference Predictions.Object.JudgementActivity.timestamp Predictions.Object.JudgementActivity.userId Predictions.Object.JudgementActivity.userName)
+                                Predictions.Object.JudgementActivity.diagnosis
+                                Predictions.Object.JudgementActivity.outcome
+
+                        mapToCommentActivity =
+                            SelectionSet.map2 CommentActivity
+                                (mapToActivityData Predictions.Object.CommentActivity.caseId Predictions.Object.CommentActivity.caseReference Predictions.Object.CommentActivity.timestamp Predictions.Object.CommentActivity.userId Predictions.Object.CommentActivity.userName)
+                                Predictions.Object.CommentActivity.comment
+
+                        mapToGroupCaseActivity =
+                            SelectionSet.map2 GroupCaseActivity
+                                (mapToActivityData Predictions.Object.GroupCaseActivity.caseId Predictions.Object.GroupCaseActivity.caseReference Predictions.Object.GroupCaseActivity.timestamp Predictions.Object.GroupCaseActivity.userId Predictions.Object.GroupCaseActivity.userName)
+                                (SelectionSet.map2 NamedNodeData Predictions.Object.GroupCaseActivity.groupId Predictions.Object.GroupCaseActivity.groupName)
+
+                        mapToDeadlineEvent =
+                            SelectionSet.map DeadlineEvent
+                                (mapToEventData Predictions.Object.DeadlineEvent.caseId Predictions.Object.DeadlineEvent.caseReference Predictions.Object.DeadlineEvent.timestamp)
+
+                        mapToEventResult : SelectionSet EventResult Event
+                        mapToEventResult =
+                            Event.fragments
+                                { onWagerActivity = mapToWagerActivity
+                                , onJudgementActivity = mapToJudgementActivity
+                                , onCommentActivity = mapToCommentActivity
+                                , onGroupCaseActivity = mapToGroupCaseActivity
+                                , onDeadlineEvent = mapToDeadlineEvent
+                                }
+                    in
+                    ( model
+                    , Query.events (\args -> { args | limit = Present 100 }) { userId = userId } mapToEventResult |> makeRequest (EventList >> GotResponse)
                     )
 
                 Groups ->
@@ -1004,10 +1117,6 @@ type alias Score =
     }
 
 
-type alias ScoresListData =
-    List Score
-
-
 mapToScore =
     SelectionSet.map8 Score
         Score.judged
@@ -1018,6 +1127,26 @@ mapToScore =
         Score.brierScore
         Score.averageBrierScore
         Score.adjustedBrierScore
+
+
+type alias EventData =
+    { case_ : NamedNodeData
+    , timestamp : Timestamp
+    }
+
+
+type alias ActivityData =
+    { event : EventData
+    , user : NamedNodeData
+    }
+
+
+type EventResult
+    = WagerActivity ActivityData String Int
+    | JudgementActivity ActivityData String Outcome
+    | CommentActivity ActivityData String
+    | GroupCaseActivity ActivityData NamedNodeData
+    | DeadlineEvent EventData
 
 
 type alias GroupDetailData =
