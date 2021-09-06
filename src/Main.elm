@@ -9,9 +9,9 @@ import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, validateConfidence, validateDeadline, viewData)
 import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (disabled, href, placeholder, selected, step, type_, value)
+import Html.Attributes exposing (disabled, href, placeholder, selected, step, title, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
-import Iso8601 exposing (fromTime)
+import Iso8601
 import NewCase
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.InputObject exposing (CaseInput, PredictionInput)
@@ -37,6 +37,9 @@ import RemoteData exposing (RemoteData(..))
 import Round
 import ScalarCodecs exposing (Id, Timestamp)
 import String
+import Task
+import Time
+import Time.Distance
 import Url
 import Url.Parser exposing ((</>), Parser, map, oneOf, s, string, top)
 
@@ -75,6 +78,8 @@ type State
 
 type alias Model =
     { key : Nav.Key
+    , zone : Time.Zone
+    , now : Time.Posix
     , state : State
     , auth : Auth
     , allUsers : List UserCandidate
@@ -112,8 +117,11 @@ usersResponseHandler url response =
 
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
 init _ url key =
-    ( Model key NoData (SignedOut []) []
-    , userListQuery |> makeRequest (usersResponseHandler url)
+    ( Model key Time.utc (Time.millisToPosix 0) NoData (SignedOut []) []
+    , Cmd.batch
+        [ Task.perform AdjustTimeZone Time.here
+        , userListQuery |> makeRequest (usersResponseHandler url)
+        ]
     )
 
 
@@ -122,7 +130,9 @@ init _ url key =
 
 
 type Msg
-    = LinkClicked Browser.UrlRequest
+    = Tick Time.Posix
+    | AdjustTimeZone Time.Zone
+    | LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
     | GotAuth Url.Url Auth
     | GrabNewUser Id
@@ -142,6 +152,16 @@ type Msg
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
+        Tick newTime ->
+            ( { model | now = newTime }
+            , Cmd.none
+            )
+
+        AdjustTimeZone newZone ->
+            ( { model | zone = newZone }
+            , Task.perform Tick Time.now
+            )
+
         LinkClicked urlRequest ->
             case urlRequest of
                 Browser.Internal url ->
@@ -330,7 +350,8 @@ updateCase getUpdatedCase oldCase newData =
 
 subscriptions : Model -> Sub Msg
 subscriptions _ =
-    Sub.none
+    -- update every minute
+    Time.every 60000 Tick
 
 
 
@@ -418,13 +439,13 @@ displayData model =
             text "No data!"
 
         UserDetail graphqlRemoteData ->
-            viewData displayUser graphqlRemoteData
+            viewData (displayUser model.now) graphqlRemoteData
 
         ScoreDetail graphqlRemoteData ->
-            viewData displayScores graphqlRemoteData
+            viewData (displayScores model.now) graphqlRemoteData
 
         EventList graphqlRemoteData ->
-            viewData displayEvents graphqlRemoteData
+            viewData (displayEvents model.now) graphqlRemoteData
 
         GroupList graphqlRemoteData ->
             viewData (displayNamedNodeList "/group") graphqlRemoteData
@@ -433,7 +454,7 @@ displayData model =
             viewData displayGroup graphqlRemoteData
 
         CaseDetail graphqlRemoteData ->
-            viewData (displayCase model.auth) graphqlRemoteData
+            viewData (displayCase model.now model.auth) graphqlRemoteData
 
         NewCase caseData ->
             case model.auth of
@@ -471,13 +492,13 @@ displayListItems displayFunction list =
     List.map (li [] << displayFunction) list
 
 
-displayUser : UserDetailData -> Html msg
-displayUser user =
+displayUser : Time.Posix -> UserDetailData -> Html msg
+displayUser now user =
     dl []
         [ dt [] [ text "Name" ]
         , dd [] [ displayNamedNodeLink "/user" user.node ]
         , dt [] [ text "Created" ]
-        , dd [] [ text <| fromTime user.created ]
+        , dd [] [ displayTime user.created now ]
         , dt [] [ text "Score" ]
         , dd []
             [ case user.score of
@@ -503,9 +524,9 @@ displayUser user =
         ]
 
 
-displayScore : Score -> List (Html msg)
-displayScore score =
-    [ td [] [ text <| fromTime score.judged ]
+displayScore : Time.Posix -> Score -> List (Html msg)
+displayScore now score =
+    [ td [] [ displayTime score.judged now ]
     , td [] [ displayNamedNodeLink "/case" score.case_ ]
     , td [] [ text score.diagnosis ]
     , td [] [ text <| String.fromInt score.confidence ++ "%" ]
@@ -528,8 +549,8 @@ displayScore score =
     ]
 
 
-displayScores : List Score -> Html msg
-displayScores scores =
+displayScores : Time.Posix -> List Score -> Html msg
+displayScores now scores =
     table []
         [ thead []
             [ tr []
@@ -543,16 +564,22 @@ displayScores scores =
                 , th [] [ text "Running adjusted Brier score" ]
                 ]
             ]
-        , tbody [] <| List.map (displayScore >> tr []) scores
+        , tbody [] <| List.map (displayScore now >> tr []) scores
         ]
 
 
-displayEvent : EventResult -> Html msg
-displayEvent event =
+displayTime : Time.Posix -> Time.Posix -> Html msg
+displayTime timeToDisplay now =
+    span [ title <| Iso8601.fromTime timeToDisplay ] [ text <| " " ++ Time.Distance.inWords timeToDisplay now ]
+
+
+displayEvent : Time.Posix -> EventResult -> Html msg
+displayEvent now event =
     li []
         (case event of
             WagerActivity activityData diagnosis confidence ->
-                [ text <| Iso8601.fromTime activityData.event.timestamp ++ ": "
+                [ displayTime activityData.event.timestamp now
+                , text ": "
                 , displayNamedNodeLink "/user" activityData.user
                 , text <| " added a wager on "
                 , displayNamedNodeLink "/case" activityData.event.case_
@@ -560,14 +587,16 @@ displayEvent event =
                 ]
 
             JudgementActivity activityData diagnosis outcome ->
-                [ text <| Iso8601.fromTime activityData.event.timestamp ++ ": "
+                [ displayTime activityData.event.timestamp now
+                , text ": "
                 , displayNamedNodeLink "/user" activityData.user
                 , text <| " judged '" ++ diagnosis ++ "' as " ++ displayOutcome outcome ++ " on case: "
                 , displayNamedNodeLink "/case" activityData.event.case_
                 ]
 
             CommentActivity activityData comment ->
-                [ text <| Iso8601.fromTime activityData.event.timestamp ++ ": "
+                [ displayTime activityData.event.timestamp now
+                , text ": "
                 , displayNamedNodeLink "/user" activityData.user
                 , text " commented on "
                 , displayNamedNodeLink "/case" activityData.event.case_
@@ -575,7 +604,8 @@ displayEvent event =
                 ]
 
             GroupCaseActivity activityData group ->
-                [ text <| Iso8601.fromTime activityData.event.timestamp ++ ": "
+                [ displayTime activityData.event.timestamp now
+                , text ": "
                 , displayNamedNodeLink "/user" activityData.user
                 , text " added a case in group "
                 , displayNamedNodeLink "/group" group
@@ -584,16 +614,17 @@ displayEvent event =
                 ]
 
             DeadlineEvent eventData ->
-                [ text <| Iso8601.fromTime eventData.timestamp ++ ": Deadline reached for "
+                [ displayTime eventData.timestamp now
+                , text ": Deadline reached for "
                 , displayNamedNodeLink "/case" eventData.case_
                 , text "!"
                 ]
         )
 
 
-displayEvents : List EventResult -> Html msg
-displayEvents events =
-    ul [] <| List.map displayEvent events
+displayEvents : Time.Posix -> List EventResult -> Html msg
+displayEvents now events =
+    ul [] <| List.map (displayEvent now) events
 
 
 displayGroup : GroupDetailData -> Html msg
@@ -648,11 +679,11 @@ displayCaseGroup auth caseDetail =
             viewGroup
 
 
-displayDeadline : Auth -> CaseDetailData -> List (Html Msg)
-displayDeadline auth caseDetail =
+displayDeadline : Time.Posix -> Auth -> CaseDetailData -> List (Html Msg)
+displayDeadline now auth caseDetail =
     let
         viewDeadline =
-            [ text <| fromTime caseDetail.deadline ]
+            [ displayTime caseDetail.deadline now ]
     in
     case auth of
         SignedIn _ user ->
@@ -696,42 +727,41 @@ displayDeadline auth caseDetail =
             viewDeadline
 
 
-displayCase : Auth -> CaseDetailData -> Html Msg
-displayCase auth caseDetail =
+displayCase : Time.Posix -> Auth -> CaseDetailData -> Html Msg
+displayCase now auth caseDetail =
     dl []
         [ dt [] [ text "Reference" ]
         , dd [] [ displayNamedNodeLink "/case" caseDetail.node ]
         , dt [] [ text "Deadline" ]
-        , dd [] <| displayDeadline auth caseDetail
+        , dd [] <| displayDeadline now auth caseDetail
         , dt [] [ text "Creator" ]
         , dd [] [ displayNamedNodeLink "/user" caseDetail.creator ]
         , dt [] [ text "Group" ]
         , dd [] <| displayCaseGroup auth caseDetail
         , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length caseDetail.diagnoses) ++ ")" ]
-        , dd [] [ ul [] <| displayListItems (displayDiagnosis auth caseDetail) caseDetail.diagnoses ++ displayNewDiagnosis auth caseDetail ]
+        , dd [] [ ul [] <| displayListItems (displayDiagnosis now auth caseDetail) caseDetail.diagnoses ++ displayNewDiagnosis auth caseDetail ]
         , dt [] [ text <| "Comments (" ++ String.fromInt (List.length caseDetail.comments) ++ ")" ]
         , dd []
             [ ul [] <|
-                displayListItems displayComment caseDetail.comments
+                displayListItems (displayComment now) caseDetail.comments
                     ++ displayNewComment auth caseDetail
             ]
         ]
 
 
-displayDiagnosis : Auth -> CaseDetailData -> DiagnosisDetailData -> List (Html Msg)
-displayDiagnosis auth caseDetail diagnosis =
+displayDiagnosis : Time.Posix -> Auth -> CaseDetailData -> DiagnosisDetailData -> List (Html Msg)
+displayDiagnosis now auth caseDetail diagnosis =
     let
         judgedAsBy outcome judgedBy =
             [ text " Judged as " ] ++ outcome ++ [ text " by ", displayNamedNodeLink "/user" judgedBy ]
     in
     [ h4 [] [ text diagnosis.node.name ]
     , ul [] <|
-        displayListItems displayWager diagnosis.wagers
+        displayListItems (displayWager now) diagnosis.wagers
             ++ (case diagnosis.judgement of
                     Just judgementData ->
                         judgedAsBy [ strong [] [ text <| displayOutcome judgementData.outcome ] ] judgementData.judgedBy
-                            ++ [ text <| " at " ++ fromTime judgementData.timestamp
-                               ]
+                            ++ [ displayTime judgementData.timestamp now ]
                             |> li []
                             |> List.singleton
 
@@ -903,19 +933,20 @@ displayNewComment auth caseDetail =
             []
 
 
-displayComment : CommentData -> List (Html msg)
-displayComment comment =
-    [ span [] [ displayNamedNodeLink "/user" comment.creator, text <| " at " ++ fromTime comment.timestamp ]
+displayComment : Time.Posix -> CommentData -> List (Html msg)
+displayComment now comment =
+    [ displayNamedNodeLink "/user" comment.creator
+    , displayTime comment.timestamp now
     , blockquote [] [ text comment.text ]
     ]
 
 
-displayWager : WagerData -> List (Html msg)
-displayWager wager =
+displayWager : Time.Posix -> WagerData -> List (Html msg)
+displayWager now wager =
     [ displayNamedNodeLink "/user" wager.creator
     , text " estimated "
     , b [] [ text <| String.fromInt wager.confidence ++ "%" ]
-    , text <| " at " ++ fromTime wager.timestamp
+    , displayTime wager.timestamp now
     ]
 
 
