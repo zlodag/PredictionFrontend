@@ -2,6 +2,10 @@ module Main exposing (main)
 
 import Browser exposing (Document)
 import Browser.Navigation as Nav
+import Chart as C
+import Chart.Attributes as CA
+import Chart.Events as CE
+import Chart.Item as CI
 import FormField exposing (Field)
 import Graphql.Http exposing (Error, HttpError(..), Request)
 import Graphql.Operation exposing (RootMutation, RootQuery)
@@ -67,7 +71,7 @@ main =
 type State
     = WelcomePage
     | UserDetail (GraphqlRemoteData UserDetailData)
-    | ScoreDetail (GraphqlRemoteData (List Score))
+    | ScoreDetail (List (CI.One Score CI.Dot)) (GraphqlRemoteData (List Score))
     | EventList (GraphqlRemoteData (List EventResult))
     | GroupList (GraphqlRemoteData (List NamedNodeData))
     | GroupDetail (GraphqlRemoteData GroupDetailData)
@@ -441,8 +445,8 @@ displayData model =
         UserDetail graphqlRemoteData ->
             viewData (displayUser model.now) graphqlRemoteData
 
-        ScoreDetail graphqlRemoteData ->
-            viewData (displayScores model.now) graphqlRemoteData
+        ScoreDetail hovering graphqlRemoteData ->
+            viewData (displayScores model.zone model.now hovering) graphqlRemoteData
 
         EventList graphqlRemoteData ->
             viewData (displayEvents model.now) graphqlRemoteData
@@ -549,22 +553,110 @@ displayScore now score =
     ]
 
 
-displayScores : Time.Posix -> List Score -> Html msg
-displayScores now scores =
-    table []
-        [ thead []
-            [ tr []
-                [ th [] [ text "Judged" ]
-                , th [] [ text "Case" ]
-                , th [] [ text "Diagnosis" ]
-                , th [] [ text "Confidence" ]
-                , th [] [ text "Outcome" ]
-                , th [] [ text "Brier score" ]
-                , th [] [ text "Running average Brier score" ]
-                , th [] [ text "Running adjusted Brier score" ]
-                ]
+displayChart : Time.Zone -> (List (CI.One Score CI.Dot) -> Msg) -> List (CI.One Score CI.Dot) -> List Score -> Html Msg
+displayChart zone onHover hovering scores =
+    let
+        formatTime : Time.Posix -> String
+        formatTime time =
+            (String.fromInt <| Time.toDay zone time)
+                ++ "/"
+                ++ (case Time.toMonth zone time of
+                        Time.Jan ->
+                            "01"
+
+                        Time.Feb ->
+                            "02"
+
+                        Time.Mar ->
+                            "03"
+
+                        Time.Apr ->
+                            "04"
+
+                        Time.May ->
+                            "05"
+
+                        Time.Jun ->
+                            "06"
+
+                        Time.Jul ->
+                            "07"
+
+                        Time.Aug ->
+                            "08"
+
+                        Time.Sep ->
+                            "09"
+
+                        Time.Oct ->
+                            "10"
+
+                        Time.Nov ->
+                            "11"
+
+                        Time.Dec ->
+                            "12"
+                   )
+                ++ "/"
+                ++ (String.dropLeft 2 <| String.fromInt <| Time.toYear zone time)
+    in
+    C.chart
+        [ CA.width 400
+        , CA.height 200
+        , CA.margin { top = 50, bottom = 50, left = 50, right = 50 }
+        , CE.onMouseMove onHover (CI.named [ "Brier score" ] |> CI.andThen CI.dots |> CE.getNearest)
+        , CE.onMouseLeave (onHover [])
+        , CA.domain
+            [ CA.lowest 0 CA.exactly
+            , CA.highest 1 CA.exactly
             ]
-        , tbody [] <| List.map (displayScore now >> tr []) scores
+        ]
+        [ C.xTicks [ CA.times zone ]
+        , C.yTicks []
+        , C.xLabels
+            [ CA.times zone
+            , CA.format (floor >> Time.millisToPosix >> formatTime)
+            , CA.fontSize 12
+            ]
+        , C.yLabels [ CA.fontSize 12 ]
+        , C.series (.judged >> Time.posixToMillis >> toFloat)
+            [ C.scatter .brierScore [] |> C.named "Brier score"
+            , C.interpolated .averageBrierScore [ CA.stepped ] [] |> C.named "average score"
+
+            --, C.interpolated .adjustedBrierScore [ CA.stepped ] [] |> C.named "adjusted score"
+            ]
+            scores
+        , C.legendsAt .max .max [ CA.alignRight, CA.moveUp 30 ] []
+        , C.each hovering <|
+            \_ item ->
+                [ C.tooltip item [] [] [] ]
+        ]
+
+
+displayScores : Time.Zone -> Time.Posix -> List (CI.One Score CI.Dot) -> List Score -> Html Msg
+displayScores zone now hovering scores =
+    let
+        onHover : List (CI.One Score CI.Dot) -> Msg
+        onHover newHovering =
+            GotResponse <| ScoreDetail newHovering <| Success scores
+    in
+    div []
+        [ div [ Html.Attributes.style "width" "500px" ] [ displayChart zone onHover hovering scores ]
+        , table []
+            [ thead []
+                [ tr []
+                    [ th [] [ text "Judged" ]
+                    , th [] [ text "Case" ]
+                    , th [] [ text "Diagnosis" ]
+                    , th [] [ text "Confidence" ]
+                    , th [] [ text "Outcome" ]
+                    , th [] [ text "Brier score" ]
+                    , th [] [ text "Running average Brier score" ]
+                    , th [] [ text "Running adjusted Brier score" ]
+                    ]
+                ]
+            , tbody [] <| List.map (displayScore now >> tr []) scores
+            ]
         ]
 
 
@@ -1007,7 +1099,7 @@ parseUrlAndRequest model url =
 
                 UserScore userId ->
                     ( model
-                    , Query.user { id = userId } (User.scores <| mapToScore) |> makeRequest (ScoreDetail >> GotResponse)
+                    , Query.user { id = userId } (User.scores <| mapToScore) |> makeRequest (ScoreDetail [] >> GotResponse)
                     )
 
                 Events userId ->
