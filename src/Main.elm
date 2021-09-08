@@ -41,6 +41,7 @@ import RemoteData exposing (RemoteData(..))
 import Round
 import ScalarCodecs exposing (Id, Timestamp)
 import String
+import Svg as S
 import Task
 import Time
 import Time.Distance
@@ -633,6 +634,89 @@ displayChart zone onHover hovering scores =
         ]
 
 
+displayConfidenceHistogram : List Score -> Html Msg
+displayConfidenceHistogram scores =
+    let
+        filter : Int -> Score -> Bool
+        filter lowerBound score =
+            let
+                foldedConfidence =
+                    50 + abs (score.confidence - 50)
+            in
+            (if lowerBound == 50 then
+                (>=)
+
+             else
+                (>)
+            )
+                foldedConfidence
+                lowerBound
+                && foldedConfidence
+                <= (lowerBound + 5)
+
+        mapFn lowerBound =
+            List.filter (filter lowerBound) scores |> foldl lowerBound
+
+        foldFn score state =
+            if score.outcome == Right then
+                { state | correct = state.correct + 1 }
+
+            else
+                state
+
+        foldl lowerBound filteredScores =
+            List.foldl foldFn { lowerBound = lowerBound, total = List.length filteredScores, correct = 0 } filteredScores
+
+        data =
+            List.range 0 9 |> List.map (\x -> 50 + x * 5) |> List.map mapFn
+
+        scoreGetY : { bin | total : Int, correct : Int } -> Float
+        scoreGetY bin =
+            if bin.total == 0 then
+                0
+
+            else
+                toFloat bin.correct * 100 / toFloat bin.total
+    in
+    C.chart
+        [ CA.width 400
+        , CA.height 200
+        , CA.margin { top = 50, bottom = 50, left = 50, right = 50 }
+        , CA.range
+            [ CA.lowest 50 CA.exactly
+            , CA.highest 100 CA.exactly
+            ]
+        , CA.domain
+            [ CA.lowest 0 CA.exactly
+            , CA.highest 100 CA.exactly
+            ]
+        ]
+        [ C.xLabels
+            [ CA.fontSize 12
+            , CA.amount 11
+            , CA.limits
+                [ CA.lowest 50 CA.exactly
+                , CA.highest 100 CA.exactly
+                ]
+            ]
+        , C.yLabels [ CA.withGrid, CA.fontSize 12 ]
+        , C.bars
+            [ CA.x1 (.lowerBound >> toFloat)
+            , CA.margin 0.02
+            ]
+            [ C.bar scoreGetY [] |> C.named "Accuracy (%)" ]
+            data
+        , C.line
+            [ CA.x1 50
+            , CA.y1 50
+            , CA.x2 100
+            , CA.y2 100
+            ]
+        , C.labelAt (CA.percent 50) (CA.percent 0) [ CA.moveDown 35, CA.fontSize 12 ] [ S.text "Confidence (%)" ]
+        , C.legendsAt .max .max [ CA.alignRight, CA.moveUp 30 ] []
+        ]
+
+
 displayScores : Time.Zone -> Time.Posix -> List (CI.One Score CI.Dot) -> List Score -> Html Msg
 displayScores zone now hovering scores =
     let
@@ -642,6 +726,7 @@ displayScores zone now hovering scores =
     in
     div []
         [ div [ Html.Attributes.style "width" "500px" ] [ displayChart zone onHover hovering scores ]
+        , div [ Html.Attributes.style "width" "500px" ] [ displayConfidenceHistogram scores ]
         , table []
             [ thead []
                 [ tr []
