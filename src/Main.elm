@@ -12,10 +12,12 @@ import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, validateConfidence, validateDeadline, viewData)
-import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (disabled, href, placeholder, selected, step, title, type_, value)
+import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, ol, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
+import Html.Attributes exposing (disabled, for, href, id, placeholder, selected, step, title, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
+import Http
 import Iso8601
+import Json.Decode
 import NewCase
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.InputObject exposing (CaseInput, PredictionInput)
@@ -37,7 +39,7 @@ import Predictions.Object.Wager as Wager
 import Predictions.Object.WagerActivity
 import Predictions.Query as Query
 import Predictions.Scalar exposing (Id(..))
-import RemoteData exposing (RemoteData(..))
+import RemoteData exposing (RemoteData(..), WebData)
 import Round
 import ScalarCodecs exposing (Id, Timestamp)
 import String
@@ -46,6 +48,7 @@ import Task
 import Time
 import Time.Distance
 import Url
+import Url.Builder
 import Url.Parser exposing ((</>), Parser, map, oneOf, s, string, top)
 
 
@@ -78,6 +81,7 @@ type State
     | GroupDetail (GraphqlRemoteData GroupDetailData)
     | CaseDetail (GraphqlRemoteData CaseDetailData)
     | NewCase NewCase.Data
+    | ImportFromPB String (WebData ImportedData)
     | NoData
 
 
@@ -152,6 +156,9 @@ type Msg
     | SubmitWager CaseDetailData Id Id Int
     | SubmitJudgement CaseDetailData Id Id Outcome
     | CaseCreated (GraphqlRemoteData Id)
+    | ChangeApiKey String
+    | ImportData String
+    | GotData String (WebData ImportedData)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -334,6 +341,22 @@ update msg model =
                 |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewJudgement caseDetail)
             )
 
+        ChangeApiKey apiKey ->
+            ( { model | state = ImportFromPB apiKey NotAsked }
+            , Cmd.none
+            )
+
+        ImportData apiKey ->
+            ( { model | state = ImportFromPB apiKey Loading }
+            , Http.get
+                { url = Url.Builder.absolute [ "my_predictions" ] [ Url.Builder.string "api_key" apiKey ]
+                , expect = Http.expectJson (RemoteData.fromResult >> GotData apiKey) dataDecoder
+                }
+            )
+
+        GotData apiKey webData ->
+            ( { model | state = ImportFromPB apiKey webData }, Cmd.none )
+
 
 updateCase : (a -> CaseDetailData) -> CaseDetailData -> GraphqlRemoteData a -> Msg
 updateCase getUpdatedCase oldCase newData =
@@ -371,6 +394,7 @@ view model =
         , ul [] <|
             [ li [] [ a [ href "/" ] [ text "Home" ] ]
             , li [] [ a [ href "/graphql" ] [ text "GraphiQL" ] ]
+            , li [] [ a [ href "/import" ] [ text "Import" ] ]
             ]
                 ++ (case model.auth of
                         SignedIn _ userCandidate ->
@@ -468,6 +492,89 @@ displayData model =
 
                 _ ->
                     text "Sign in first"
+
+        ImportFromPB apiKey importedData ->
+            displayImport apiKey importedData
+
+
+type alias ImportedData =
+    { name : String
+    , email : String
+    , userId : Int
+    , predictions : List ImportedPrediction
+    }
+
+
+type alias ImportedPrediction =
+    { description : String
+    }
+
+
+dataDecoder : Json.Decode.Decoder ImportedData
+dataDecoder =
+    Json.Decode.map4 ImportedData
+        (Json.Decode.at [ "user", "name" ] Json.Decode.string)
+        (Json.Decode.at [ "user", "email" ] Json.Decode.string)
+        (Json.Decode.at [ "user", "user_id" ] Json.Decode.int)
+        (Json.Decode.field "predictions" <| Json.Decode.list predictionDecoder)
+
+
+predictionDecoder : Json.Decode.Decoder ImportedPrediction
+predictionDecoder =
+    Json.Decode.map ImportedPrediction
+        (Json.Decode.field "description" Json.Decode.string)
+
+
+displayImportedData : String -> ImportedData -> Html Msg
+displayImportedData apiKey importedData =
+    dl []
+        [ dt [] [ text "API key" ]
+        , dd [] [ text apiKey ]
+        , dt [] [ text "name" ]
+        , dd [] [ text importedData.name ]
+        , dt [] [ text "email" ]
+        , dd [] [ text importedData.email ]
+        , dt [] [ text "user_id" ]
+        , dd [] [ text <| String.fromInt importedData.userId ]
+        , dt [] [ text "predictions" ]
+        , dd [] [ ol [] <| List.map (displayImportedPrediction >> List.singleton >> li []) importedData.predictions ]
+        ]
+
+
+displayImportedPrediction : ImportedPrediction -> Html Msg
+displayImportedPrediction importedPrediction =
+    text importedPrediction.description
+
+
+displayImport : String -> WebData ImportedData -> Html Msg
+displayImport apiKey webData =
+    case webData of
+        Success importedData ->
+            displayImportedData apiKey importedData
+
+        NotAsked ->
+            form [ onSubmit <| ImportData apiKey ]
+                [ label [ for "apiKey" ] [ text "API key: " ]
+                , input [ id "apiKey", value apiKey, onInput ChangeApiKey ] []
+                ]
+
+        Loading ->
+            text "Loading..."
+
+        Failure (Http.BadBody msg) ->
+            text msg
+
+        Failure (Http.BadUrl url) ->
+            text <| "Bad URL: " ++ url
+
+        Failure Http.Timeout ->
+            text "Timeout..."
+
+        Failure Http.NetworkError ->
+            text "Network Error"
+
+        Failure (Http.BadStatus code) ->
+            text <| "Error: status code " ++ String.fromInt code
 
 
 welcomeMessage : Auth -> String
@@ -1153,6 +1260,7 @@ type Route
     | Group Id
     | Case Id
     | New
+    | Import
 
 
 routeParser : Parser (Route -> a) a
@@ -1166,6 +1274,7 @@ routeParser =
         , map (Group << Id) <| s "group" </> string
         , map (Case << Id) <| s "case" </> string
         , map New <| s "new"
+        , map Import <| s "import"
         ]
 
 
@@ -1268,6 +1377,11 @@ parseUrlAndRequest model url =
                             ( { model | state = NoData }
                             , Cmd.none
                             )
+
+                Import ->
+                    ( { model | state = ImportFromPB "" NotAsked }
+                    , Cmd.none
+                    )
 
         Nothing ->
             ( { model | state = NoData }
