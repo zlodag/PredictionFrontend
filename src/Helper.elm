@@ -1,4 +1,4 @@
-module Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, validateConfidence, validateDeadline, viewData)
+module Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, getShortDateString, getTimeString, validateConfidence, validateDeadline, viewData)
 
 import Dict exposing (Dict)
 import FormField
@@ -15,6 +15,7 @@ import Predictions.Scalar exposing (Id(..))
 import RemoteData exposing (RemoteData)
 import ScalarCodecs exposing (Timestamp)
 import String exposing (fromInt)
+import Time exposing (Month(..))
 
 
 viewData : (a -> Html msg) -> GraphqlRemoteData a -> Html msg
@@ -197,3 +198,81 @@ validateConfidence confidence =
 
         Nothing ->
             Err "Enter an integer from 0 to 100"
+
+
+toPaddedString : Int -> Int -> String
+toPaddedString digits time =
+    String.padLeft digits '0' (String.fromInt time)
+
+
+fromMonth : Time.Month -> Int
+fromMonth month =
+    case month of
+        Jan ->
+            1
+
+        Feb ->
+            2
+
+        Mar ->
+            3
+
+        Apr ->
+            4
+
+        May ->
+            5
+
+        Jun ->
+            6
+
+        Jul ->
+            7
+
+        Aug ->
+            8
+
+        Sep ->
+            9
+
+        Oct ->
+            10
+
+        Nov ->
+            11
+
+        Dec ->
+            12
+
+
+getShortDateString : Time.Zone -> Time.Posix -> String
+getShortDateString zone time =
+    -- DD
+    toPaddedString 2 (Time.toDay zone time)
+        ++ "/"
+        -- MM
+        ++ toPaddedString 2 (fromMonth <| Time.toMonth zone time)
+        ++ "/"
+        -- YY
+        ++ toPaddedString 2 (remainderBy 100 <| Time.toYear zone time)
+
+
+getTimeString : Time.Zone -> Time.Posix -> String
+getTimeString zone time =
+    -- DD
+    toPaddedString 2 (Time.toDay zone time)
+        ++ "/"
+        -- MM
+        ++ toPaddedString 2 (fromMonth (Time.toMonth zone time))
+        ++ "/"
+        -- YYYY
+        ++ toPaddedString 4 (Time.toYear zone time)
+        ++ " "
+        -- HH
+        ++ toPaddedString 2 (Time.toHour zone time)
+        ++ ":"
+        -- mm
+        ++ toPaddedString 2 (Time.toMinute zone time)
+        ++ ":"
+        -- ss
+        ++ toPaddedString 2 (Time.toSecond zone time)
