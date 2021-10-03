@@ -6,14 +6,15 @@ import Chart as C
 import Chart.Attributes as CA
 import Chart.Events as CE
 import Chart.Item as CI
+import Dict exposing (Dict)
 import FormField exposing (Field)
 import Graphql.Http exposing (Error, HttpError(..), Request)
 import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, getShortDateString, getTimeString, validateConfidence, validateDeadline, viewData)
-import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, ol, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (disabled, for, href, id, placeholder, selected, start, step, title, type_, value)
+import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
+import Html.Attributes exposing (disabled, for, href, id, placeholder, selected, step, title, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
 import Http
 import Iso8601
@@ -569,13 +570,59 @@ type alias ImportedData =
     { name : String
     , email : String
     , userId : Int
+    , predictions : ImportedCases
+    }
+
+
+type alias ImportedCases =
+    { count : Int
+    , cases : Dict Int ImportedCase
+    }
+
+
+type alias ImportedCase =
+    { reference : String
+    , created : Timestamp
     , predictions : List ImportedPrediction
     }
 
 
+createImportedCases : List ImportedPrediction -> ImportedCases
+createImportedCases importedPredictions =
+    let
+        getReference : ImportedPrediction -> String -> String
+        getReference { diagnosis } descriptionWithGroup =
+            String.slice 1 -(2 + String.length diagnosis) descriptionWithGroup
+
+        upsert : ImportedPrediction -> Dict Int ImportedCase -> Dict Int ImportedCase
+        upsert prediction dict =
+            case prediction.predictionGroup of
+                Nothing ->
+                    dict
+
+                Just { groupId, descriptionWithGroup } ->
+                    let
+                        groupList =
+                            Maybe.withDefault (ImportedCase (getReference prediction descriptionWithGroup) prediction.created []) <| Dict.get groupId dict
+                    in
+                    Dict.insert groupId { groupList | predictions = prediction :: groupList.predictions } dict
+    in
+    ImportedCases (List.length importedPredictions) <| List.foldl upsert Dict.empty importedPredictions
+
+
+type alias ImportedPredictionGroupData =
+    { groupId : Int
+    , descriptionWithGroup : String
+    }
+
+
 type alias ImportedPrediction =
-    { description : String
-    , created : Timestamp
+    { created : Timestamp
+    , predictionGroup : Maybe ImportedPredictionGroupData
+    , diagnosis : String
+    , confidence : Int
+    , deadline : Timestamp
+    , outcome : Maybe Outcome
     }
 
 
@@ -585,14 +632,27 @@ dataDecoder =
         (D.at [ "user", "name" ] D.string)
         (D.at [ "user", "email" ] D.string)
         (D.at [ "user", "user_id" ] D.int)
-        (D.field "predictions" <| D.list predictionDecoder)
+        (D.map createImportedCases <| D.field "predictions" <| D.list predictionDecoder)
 
 
 predictionDecoder : D.Decoder ImportedPrediction
 predictionDecoder =
-    D.map2 ImportedPrediction
-        (D.field "description" D.string)
+    let
+        mapBoolToOutcome : Bool -> Outcome
+        mapBoolToOutcome bool =
+            if bool then
+                Right
+
+            else
+                Wrong
+    in
+    D.map6 ImportedPrediction
         (D.field "created_at" Iso8601.decoder)
+        (D.maybe <| D.map2 ImportedPredictionGroupData (D.field "prediction_group_id" D.int) (D.field "description_with_group" D.string))
+        (D.field "description" D.string)
+        (D.field "mean_confidence" D.int)
+        (D.field "deadline" Iso8601.decoder)
+        (D.field "outcome" <| D.nullable (D.map mapBoolToOutcome D.bool))
 
 
 displayImportedData : Now -> ImportParams -> ImportedData -> Html Msg
@@ -609,7 +669,7 @@ displayImportedData now importParams importedData =
                 []
             )
                 ++ [ text <| String.fromInt importParams.page ]
-                ++ (if importParams.pageSize == List.length importedData.predictions then
+                ++ (if importParams.pageSize == importedData.predictions.count then
                         [ button [ type_ "button", onClick <| ImportData { importParams | page = importParams.page + 1 } ] [ text ">" ] ]
 
                     else
@@ -622,17 +682,35 @@ displayImportedData now importParams importedData =
         , dt [] [ text "user_id" ]
         , dd [] [ text <| String.fromInt importedData.userId ]
         , dt [] [ text "predictions" ]
-        , dd [] [ ol [ start <| (importParams.page - 1) * importParams.pageSize + 1 ] <| List.map (displayImportedPrediction now >> List.singleton >> li []) importedData.predictions ]
+        , dd [] [ ul [] <| List.map (displayImportedPredictionGroup now >> List.singleton >> li []) <| Dict.toList importedData.predictions.cases ]
+        ]
+
+
+displayImportedPredictionGroup : Now -> ( Int, ImportedCase ) -> Html Msg
+displayImportedPredictionGroup now ( _, case_ ) =
+    dl []
+        [ dt [] [ text "Reference" ]
+        , dd [] [ text case_.reference ]
+        , dt [] [ text "Created" ]
+        , dd [] [ displayTime now case_.created ]
+        , dt [] [ text "Predictions" ]
+        , dd [] [ ul [] <| List.map (displayImportedPrediction now >> List.singleton >> li []) case_.predictions ]
         ]
 
 
 displayImportedPrediction : Now -> ImportedPrediction -> Html Msg
 displayImportedPrediction now importedPrediction =
     dl []
-        [ dt [] [ text "Description" ]
-        , dd [] [ text importedPrediction.description ]
+        [ dt [] [ text "Diagnosis" ]
+        , dd [] [ text importedPrediction.diagnosis ]
         , dt [] [ text "Created" ]
         , dd [] [ displayTime now importedPrediction.created ]
+        , dt [] [ text "Confidence" ]
+        , dd [] [ text <| String.fromInt importedPrediction.confidence ++ "%" ]
+        , dt [] [ text "Deadline" ]
+        , dd [] [ displayTime now importedPrediction.deadline ]
+        , dt [] [ text "Outcome" ]
+        , dd [] [ text <| Maybe.withDefault "Pending" <| Maybe.map displayOutcome importedPrediction.outcome ]
         ]
 
 
