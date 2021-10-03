@@ -2,4 +2,4 @@ node_modules/
 src/Predictions/
 .idea/
 elm-stuff/
-index.html
+main.js

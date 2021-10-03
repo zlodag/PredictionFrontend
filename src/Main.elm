@@ -1,4 +1,4 @@
-module Main exposing (main)
+port module Main exposing (main)
 
 import Browser exposing (Document)
 import Browser.Navigation as Nav
@@ -67,6 +67,16 @@ main =
         , onUrlChange = UrlChanged
         , onUrlRequest = LinkClicked
         }
+
+
+
+-- PORTS
+
+
+port decrypt : { password : String, references : List EncryptedReference } -> Cmd msg
+
+
+port decryptReceiver : (List EncryptedReference -> msg) -> Sub msg
 
 
 
@@ -165,6 +175,7 @@ type Msg
     | ChangeImportParams ImportParams
     | ImportData ImportParams
     | GotImportedDataResult ImportParams (RemoteData (Html Msg) ImportedData)
+    | GotDecrypted (List EncryptedReference)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -356,9 +367,9 @@ update msg model =
             ( { model | state = ImportFromPB importParams Loading }
             , Http.get
                 { url =
-                    Url.Builder.absolute [ "my_predictions" ]
-                        --Url.Builder.crossOrigin "https://predictionbook.com"
-                        --    [ "api", "my_predictions" ]
+                    --Url.Builder.absolute [ "my_predictions" ]
+                    Url.Builder.crossOrigin "https://predictionbook.com"
+                        [ "api", "my_predictions" ]
                         [ Url.Builder.string "api_token" importParams.apiToken
                         , Url.Builder.int "page_size" importParams.pageSize
                         , Url.Builder.int "page" importParams.page
@@ -367,8 +378,49 @@ update msg model =
                 }
             )
 
-        GotImportedDataResult apiKey remoteData ->
-            ( { model | state = ImportFromPB apiKey remoteData }, Cmd.none )
+        GotImportedDataResult importParams remoteData ->
+            ( { model | state = ImportFromPB importParams remoteData }
+            , case remoteData of
+                Success data ->
+                    decrypt { password = importParams.password, references = Dict.foldr (\_ case_ cases -> case_.reference :: cases) [] data.predictions.cases }
+
+                _ ->
+                    Cmd.none
+            )
+
+        GotDecrypted decryptedReferences ->
+            ( case model.state of
+                ImportFromPB importParams (Success importedData) ->
+                    let
+                        replace : EncryptedReference -> Maybe ImportedCase -> Maybe ImportedCase
+                        replace decrypted importedCase =
+                            case importedCase of
+                                Just c ->
+                                    Just { c | reference = decrypted }
+
+                                Nothing ->
+                                    Nothing
+
+                        fold : EncryptedReference -> Dict Int ImportedCase -> Dict Int ImportedCase
+                        fold decrypted dict =
+                            Dict.update decrypted.groupId (replace decrypted) dict
+
+                        cases : Dict Int ImportedCase
+                        cases =
+                            List.foldl fold importedData.predictions.cases decryptedReferences
+                    in
+                    { model
+                        | state =
+                            ImportFromPB importParams <|
+                                Success <|
+                                    ImportedData importedData.name importedData.email importedData.userId <|
+                                        ImportedCases importedData.predictions.count cases
+                    }
+
+                _ ->
+                    model
+            , Cmd.none
+            )
 
 
 expectJson : (Result (Html msg) a -> msg) -> D.Decoder a -> Http.Expect msg
@@ -434,8 +486,10 @@ updateCase getUpdatedCase oldCase newData =
 
 subscriptions : Model -> Sub Msg
 subscriptions _ =
-    -- update every minute
-    Time.every 60000 Tick
+    Sub.batch
+        [ Time.every 60000 Tick
+        , decryptReceiver GotDecrypted
+        ]
 
 
 
@@ -557,6 +611,7 @@ type alias ImportParams =
     { apiToken : String
     , pageSize : Int
     , page : Int
+    , password : String
     }
 
 
@@ -574,6 +629,13 @@ type alias ImportedData =
     }
 
 
+type alias EncryptedReference =
+    { groupId : Int
+    , ciphertext : String
+    , cleartext : Maybe String
+    }
+
+
 type alias ImportedCases =
     { count : Int
     , cases : Dict Int ImportedCase
@@ -581,7 +643,7 @@ type alias ImportedCases =
 
 
 type alias ImportedCase =
-    { reference : String
+    { reference : EncryptedReference
     , created : Timestamp
     , predictions : List ImportedPrediction
     }
@@ -590,9 +652,9 @@ type alias ImportedCase =
 createImportedCases : List ImportedPrediction -> ImportedCases
 createImportedCases importedPredictions =
     let
-        getReference : ImportedPrediction -> String -> String
-        getReference { diagnosis } descriptionWithGroup =
-            String.slice 1 -(2 + String.length diagnosis) descriptionWithGroup
+        getReference : ImportedPrediction -> ImportedPredictionGroupData -> EncryptedReference
+        getReference { diagnosis } group =
+            EncryptedReference group.groupId (String.slice 1 -(2 + String.length diagnosis) group.descriptionWithGroup) Nothing
 
         upsert : ImportedPrediction -> Dict Int ImportedCase -> Dict Int ImportedCase
         upsert prediction dict =
@@ -600,12 +662,12 @@ createImportedCases importedPredictions =
                 Nothing ->
                     dict
 
-                Just { groupId, descriptionWithGroup } ->
+                Just group ->
                     let
                         groupList =
-                            Maybe.withDefault (ImportedCase (getReference prediction descriptionWithGroup) prediction.created []) <| Dict.get groupId dict
+                            Maybe.withDefault (ImportedCase (getReference prediction group) prediction.created []) <| Dict.get group.groupId dict
                     in
-                    Dict.insert groupId { groupList | predictions = prediction :: groupList.predictions } dict
+                    Dict.insert group.groupId { groupList | predictions = prediction :: groupList.predictions } dict
     in
     ImportedCases (List.length importedPredictions) <| List.foldl upsert Dict.empty importedPredictions
 
@@ -690,7 +752,7 @@ displayImportedPredictionGroup : Now -> ( Int, ImportedCase ) -> Html Msg
 displayImportedPredictionGroup now ( _, case_ ) =
     dl []
         [ dt [] [ text "Reference" ]
-        , dd [] [ text case_.reference ]
+        , dd [] [ text <| Maybe.withDefault case_.reference.ciphertext case_.reference.cleartext ]
         , dt [] [ text "Created" ]
         , dd [] [ displayTime now case_.created ]
         , dt [] [ text "Predictions" ]
@@ -730,10 +792,15 @@ displayImport now importParams remoteData =
 
                 changePage page =
                     ChangeImportParams { importParams | page = Maybe.withDefault 1 <| String.toInt page }
+
+                changePassword password =
+                    ChangeImportParams { importParams | password = password }
             in
             form [ onSubmit <| ImportData importParams ]
                 [ label [ for "api_token" ] [ text "API token: " ]
                 , input [ id "api_token", value importParams.apiToken, onInput changeApiToken ] []
+                , label [ for "password" ] [ text "Decryption password: " ]
+                , input [ id "password", type_ "password", value importParams.password, onInput changePassword ] []
                 , label [ for "page_size" ] [ text "Page size: " ]
                 , input [ id "page_size", type_ "number", Html.Attributes.min "1", Html.Attributes.max "1000", step "1", value <| String.fromInt importParams.pageSize, onInput changePageSize ] []
                 , label [ for "page" ] [ text "Page: " ]
@@ -1505,7 +1572,7 @@ parseUrlAndRequest model url =
                             )
 
                 Import ->
-                    ( { model | state = ImportFromPB (ImportParams "" 1000 1) NotAsked }
+                    ( { model | state = ImportFromPB (ImportParams "" 1000 1 "") NotAsked }
                     , Cmd.none
                     )
 
