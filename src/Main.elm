@@ -81,7 +81,7 @@ type State
     | GroupDetail (GraphqlRemoteData GroupDetailData)
     | CaseDetail (GraphqlRemoteData CaseDetailData)
     | NewCase NewCase.Data
-    | ImportFromPB String (WebData ImportedData)
+    | ImportFromPB ImportParams (WebData ImportedData)
     | NoData
 
 
@@ -156,9 +156,9 @@ type Msg
     | SubmitWager CaseDetailData Id Id Int
     | SubmitJudgement CaseDetailData Id Id Outcome
     | CaseCreated (GraphqlRemoteData Id)
-    | ChangeApiKey String
-    | ImportData String
-    | GotData String (WebData ImportedData)
+    | ChangeImportParams ImportParams
+    | ImportData ImportParams
+    | GotImportedDataResult ImportParams (WebData ImportedData)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -341,20 +341,25 @@ update msg model =
                 |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewJudgement caseDetail)
             )
 
-        ChangeApiKey apiKey ->
-            ( { model | state = ImportFromPB apiKey NotAsked }
+        ChangeImportParams importParams ->
+            ( { model | state = ImportFromPB importParams NotAsked }
             , Cmd.none
             )
 
-        ImportData apiKey ->
-            ( { model | state = ImportFromPB apiKey Loading }
+        ImportData importParams ->
+            ( { model | state = ImportFromPB importParams Loading }
             , Http.get
-                { url = Url.Builder.absolute [ "my_predictions" ] [ Url.Builder.string "api_key" apiKey ]
-                , expect = Http.expectJson (RemoteData.fromResult >> GotData apiKey) dataDecoder
+                { url =
+                    Url.Builder.absolute [ "my_predictions" ]
+                        [ Url.Builder.string "api_token" importParams.apiToken
+                        , Url.Builder.string "page_size" <| String.fromInt importParams.pageSize
+                        , Url.Builder.string "page" <| String.fromInt importParams.page
+                        ]
+                , expect = Http.expectJson (RemoteData.fromResult >> GotImportedDataResult importParams) dataDecoder
                 }
             )
 
-        GotData apiKey webData ->
+        GotImportedDataResult apiKey webData ->
             ( { model | state = ImportFromPB apiKey webData }, Cmd.none )
 
 
@@ -493,8 +498,15 @@ displayData model =
                 _ ->
                     text "Sign in first"
 
-        ImportFromPB apiKey importedData ->
-            displayImport apiKey importedData
+        ImportFromPB importParams importedData ->
+            displayImport importParams importedData
+
+
+type alias ImportParams =
+    { apiToken : String
+    , pageSize : Int
+    , page : Int
+    }
 
 
 type alias ImportedData =
@@ -525,11 +537,11 @@ predictionDecoder =
         (Json.Decode.field "description" Json.Decode.string)
 
 
-displayImportedData : String -> ImportedData -> Html Msg
-displayImportedData apiKey importedData =
+displayImportedData : ImportParams -> ImportedData -> Html Msg
+displayImportedData importParams importedData =
     dl []
-        [ dt [] [ text "API key" ]
-        , dd [] [ text apiKey ]
+        [ dt [] [ text "API token" ]
+        , dd [] [ text importParams.apiToken ]
         , dt [] [ text "name" ]
         , dd [] [ text importedData.name ]
         , dt [] [ text "email" ]
@@ -546,16 +558,31 @@ displayImportedPrediction importedPrediction =
     text importedPrediction.description
 
 
-displayImport : String -> WebData ImportedData -> Html Msg
-displayImport apiKey webData =
+displayImport : ImportParams -> WebData ImportedData -> Html Msg
+displayImport importParams webData =
     case webData of
         Success importedData ->
-            displayImportedData apiKey importedData
+            displayImportedData importParams importedData
 
         NotAsked ->
-            form [ onSubmit <| ImportData apiKey ]
-                [ label [ for "apiKey" ] [ text "API key: " ]
-                , input [ id "apiKey", value apiKey, onInput ChangeApiKey ] []
+            let
+                changeApiToken apiToken =
+                    ChangeImportParams { importParams | apiToken = apiToken }
+
+                changePageSize pageSize =
+                    ChangeImportParams { importParams | pageSize = Maybe.withDefault 1000 <| String.toInt pageSize }
+
+                changePage page =
+                    ChangeImportParams { importParams | page = Maybe.withDefault 1 <| String.toInt page }
+            in
+            form [ onSubmit <| ImportData importParams ]
+                [ label [ for "api_token" ] [ text "API token: " ]
+                , input [ id "api_token", value importParams.apiToken, onInput changeApiToken ] []
+                , label [ for "page_size" ] [ text "Page size: " ]
+                , input [ id "page_size", type_ "number", Html.Attributes.min "1", Html.Attributes.max "1000", step "1", value <| String.fromInt importParams.pageSize, onInput changePageSize ] []
+                , label [ for "page" ] [ text "Page: " ]
+                , input [ id "page", type_ "number", Html.Attributes.min "1", step "1", value <| String.fromInt importParams.page, onInput changePage ] []
+                , button [ type_ "submit" ] [ text "Import!" ]
                 ]
 
         Loading ->
@@ -1379,7 +1406,7 @@ parseUrlAndRequest model url =
                             )
 
                 Import ->
-                    ( { model | state = ImportFromPB "" NotAsked }
+                    ( { model | state = ImportFromPB (ImportParams "" 1000 1) NotAsked }
                     , Cmd.none
                     )
 
