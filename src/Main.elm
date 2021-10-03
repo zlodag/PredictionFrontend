@@ -13,11 +13,11 @@ import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, validateConfidence, validateDeadline, viewData)
 import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, ol, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (disabled, for, href, id, placeholder, selected, step, title, type_, value)
+import Html.Attributes exposing (disabled, for, href, id, placeholder, selected, start, step, title, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
 import Http
 import Iso8601
-import Json.Decode
+import Json.Decode as D
 import NewCase
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.InputObject exposing (CaseInput, PredictionInput)
@@ -39,7 +39,7 @@ import Predictions.Object.Wager as Wager
 import Predictions.Object.WagerActivity
 import Predictions.Query as Query
 import Predictions.Scalar exposing (Id(..))
-import RemoteData exposing (RemoteData(..), WebData)
+import RemoteData exposing (RemoteData(..))
 import Round
 import ScalarCodecs exposing (Id, Timestamp)
 import String
@@ -81,7 +81,7 @@ type State
     | GroupDetail (GraphqlRemoteData GroupDetailData)
     | CaseDetail (GraphqlRemoteData CaseDetailData)
     | NewCase NewCase.Data
-    | ImportFromPB ImportParams (WebData ImportedData)
+    | ImportFromPB ImportParams (RemoteData (Html Msg) ImportedData)
     | NoData
 
 
@@ -158,7 +158,7 @@ type Msg
     | CaseCreated (GraphqlRemoteData Id)
     | ChangeImportParams ImportParams
     | ImportData ImportParams
-    | GotImportedDataResult ImportParams (WebData ImportedData)
+    | GotImportedDataResult ImportParams (RemoteData (Html Msg) ImportedData)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -350,17 +350,62 @@ update msg model =
             ( { model | state = ImportFromPB importParams Loading }
             , Http.get
                 { url =
-                    Url.Builder.absolute [ "my_predictions" ]
+                    --Url.Builder.absolute [ "my_predictions" ]
+                    Url.Builder.crossOrigin "https://predictionbook.com"
+                        [ "api", "my_predictions" ]
                         [ Url.Builder.string "api_token" importParams.apiToken
-                        , Url.Builder.string "page_size" <| String.fromInt importParams.pageSize
-                        , Url.Builder.string "page" <| String.fromInt importParams.page
+                        , Url.Builder.int "page_size" importParams.pageSize
+                        , Url.Builder.int "page" importParams.page
                         ]
-                , expect = Http.expectJson (RemoteData.fromResult >> GotImportedDataResult importParams) dataDecoder
+                , expect = expectJson (RemoteData.fromResult >> GotImportedDataResult importParams) dataDecoder
                 }
             )
 
-        GotImportedDataResult apiKey webData ->
-            ( { model | state = ImportFromPB apiKey webData }, Cmd.none )
+        GotImportedDataResult apiKey remoteData ->
+            ( { model | state = ImportFromPB apiKey remoteData }, Cmd.none )
+
+
+expectJson : (Result (Html msg) a -> msg) -> D.Decoder a -> Http.Expect msg
+expectJson toMsg decoder =
+    Http.expectStringResponse toMsg <|
+        \response ->
+            case response of
+                Http.BadUrl_ url ->
+                    Err <| text <| "Bad url: " ++ url
+
+                Http.Timeout_ ->
+                    Err <| text "Timeout error"
+
+                Http.NetworkError_ ->
+                    Err <| text "Network error"
+
+                Http.BadStatus_ metadata body ->
+                    let
+                        errorDecoder =
+                            D.map2 ImportError
+                                (D.field "error" D.string)
+                                (D.field "status" D.string)
+                    in
+                    Err <|
+                        case D.decodeString errorDecoder body of
+                            Ok e ->
+                                dl []
+                                    [ dt [] [ text "Error" ]
+                                    , dd [] [ text e.error ]
+                                    , dt [] [ text "Status" ]
+                                    , dd [] [ text e.status ]
+                                    ]
+
+                            Err _ ->
+                                text <| "Error " ++ String.fromInt metadata.statusCode ++ ": " ++ metadata.statusText
+
+                Http.GoodStatus_ _ body ->
+                    case D.decodeString decoder body of
+                        Ok value ->
+                            Ok value
+
+                        Err err ->
+                            Err <| text <| D.errorToString err
 
 
 updateCase : (a -> CaseDetailData) -> CaseDetailData -> GraphqlRemoteData a -> Msg
@@ -509,6 +554,12 @@ type alias ImportParams =
     }
 
 
+type alias ImportError =
+    { error : String
+    , status : String
+    }
+
+
 type alias ImportedData =
     { name : String
     , email : String
@@ -522,19 +573,19 @@ type alias ImportedPrediction =
     }
 
 
-dataDecoder : Json.Decode.Decoder ImportedData
+dataDecoder : D.Decoder ImportedData
 dataDecoder =
-    Json.Decode.map4 ImportedData
-        (Json.Decode.at [ "user", "name" ] Json.Decode.string)
-        (Json.Decode.at [ "user", "email" ] Json.Decode.string)
-        (Json.Decode.at [ "user", "user_id" ] Json.Decode.int)
-        (Json.Decode.field "predictions" <| Json.Decode.list predictionDecoder)
+    D.map4 ImportedData
+        (D.at [ "user", "name" ] D.string)
+        (D.at [ "user", "email" ] D.string)
+        (D.at [ "user", "user_id" ] D.int)
+        (D.field "predictions" <| D.list predictionDecoder)
 
 
-predictionDecoder : Json.Decode.Decoder ImportedPrediction
+predictionDecoder : D.Decoder ImportedPrediction
 predictionDecoder =
-    Json.Decode.map ImportedPrediction
-        (Json.Decode.field "description" Json.Decode.string)
+    D.map ImportedPrediction
+        (D.field "description" D.string)
 
 
 displayImportedData : ImportParams -> ImportedData -> Html Msg
@@ -542,6 +593,21 @@ displayImportedData importParams importedData =
     dl []
         [ dt [] [ text "API token" ]
         , dd [] [ text importParams.apiToken ]
+        , dt [] [ text "Page" ]
+        , dd [] <|
+            (if importParams.page > 1 then
+                [ button [ type_ "button", onClick <| ImportData { importParams | page = importParams.page - 1 } ] [ text "<" ] ]
+
+             else
+                []
+            )
+                ++ [ text <| String.fromInt importParams.page ]
+                ++ (if importParams.pageSize == List.length importedData.predictions then
+                        [ button [ type_ "button", onClick <| ImportData { importParams | page = importParams.page + 1 } ] [ text ">" ] ]
+
+                    else
+                        []
+                   )
         , dt [] [ text "name" ]
         , dd [] [ text importedData.name ]
         , dt [] [ text "email" ]
@@ -549,7 +615,7 @@ displayImportedData importParams importedData =
         , dt [] [ text "user_id" ]
         , dd [] [ text <| String.fromInt importedData.userId ]
         , dt [] [ text "predictions" ]
-        , dd [] [ ol [] <| List.map (displayImportedPrediction >> List.singleton >> li []) importedData.predictions ]
+        , dd [] [ ol [ start <| (importParams.page - 1) * importParams.pageSize + 1 ] <| List.map (displayImportedPrediction >> List.singleton >> li []) importedData.predictions ]
         ]
 
 
@@ -558,9 +624,9 @@ displayImportedPrediction importedPrediction =
     text importedPrediction.description
 
 
-displayImport : ImportParams -> WebData ImportedData -> Html Msg
-displayImport importParams webData =
-    case webData of
+displayImport : ImportParams -> RemoteData (Html Msg) ImportedData -> Html Msg
+displayImport importParams remoteData =
+    case remoteData of
         Success importedData ->
             displayImportedData importParams importedData
 
@@ -588,20 +654,8 @@ displayImport importParams webData =
         Loading ->
             text "Loading..."
 
-        Failure (Http.BadBody msg) ->
-            text msg
-
-        Failure (Http.BadUrl url) ->
-            text <| "Bad URL: " ++ url
-
-        Failure Http.Timeout ->
-            text "Timeout..."
-
-        Failure Http.NetworkError ->
-            text "Network Error"
-
-        Failure (Http.BadStatus code) ->
-            text <| "Error: status code " ++ String.fromInt code
+        Failure html ->
+            html
 
 
 welcomeMessage : Auth -> String
