@@ -14,8 +14,10 @@ import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, getShortDateString, getTimeString, validateConfidence, validateDeadline, viewData)
 import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (disabled, for, href, id, placeholder, selected, step, title, type_, value)
-import Html.Events exposing (onClick, onInput, onSubmit)
+import Html.Attributes exposing (checked, disabled, for, href, id, placeholder, selected, step, title, type_, value)
+import Html.Events exposing (onCheck, onClick, onInput, onSubmit)
+import Html.Keyed as Keyed
+import Html.Lazy exposing (lazy)
 import Http
 import Iso8601
 import Json.Decode as D
@@ -646,6 +648,7 @@ type alias ImportedCase =
     { reference : EncryptedReference
     , created : Timestamp
     , predictions : List ImportedPrediction
+    , selected : Bool
     }
 
 
@@ -665,7 +668,7 @@ createImportedCases importedPredictions =
                 Just group ->
                     let
                         groupList =
-                            Maybe.withDefault (ImportedCase (getReference prediction group) prediction.created []) <| Dict.get group.groupId dict
+                            Maybe.withDefault (ImportedCase (getReference prediction group) prediction.created [] True) <| Dict.get group.groupId dict
                     in
                     Dict.insert group.groupId { groupList | predictions = prediction :: groupList.predictions } dict
     in
@@ -719,6 +722,29 @@ predictionDecoder =
 
 displayImportedData : Now -> ImportParams -> ImportedData -> Html Msg
 displayImportedData now importParams importedData =
+    let
+        selectedCases : List ImportedCase
+        selectedCases =
+            let
+                acc : a -> ImportedCase -> List ImportedCase -> List ImportedCase
+                acc _ case_ list =
+                    if case_.selected then
+                        case_ :: list
+
+                    else
+                        list
+            in
+            Dict.foldr acc [] importedData.predictions.cases
+
+        updateFn : Bool -> ImportedCase -> ImportedCase
+        updateFn selected case_ =
+            { case_ | selected = selected }
+
+        checkListener : Int -> Bool -> Msg
+        checkListener groupId selected =
+            GotImportedDataResult importParams <|
+                Success { importedData | predictions = ImportedCases importedData.predictions.count <| Dict.update groupId (Maybe.map <| updateFn selected) importedData.predictions.cases }
+    in
     dl []
         [ dt [] [ text "API token" ]
         , dd [] [ text importParams.apiToken ]
@@ -743,20 +769,32 @@ displayImportedData now importParams importedData =
         , dd [] [ text importedData.email ]
         , dt [] [ text "user_id" ]
         , dd [] [ text <| String.fromInt importedData.userId ]
-        , dt [] [ text "predictions" ]
-        , dd [] [ ul [] <| List.map (displayImportedPredictionGroup now >> List.singleton >> li []) <| Dict.toList importedData.predictions.cases ]
+        , dt []
+            [ text "predictions"
+            , button [ type_ "button" ]
+                [ text <|
+                    "Import predictions ("
+                        ++ (String.fromInt <| List.length selectedCases)
+                        ++ ") total"
+                ]
+            ]
+        , dd [] [ Keyed.node "ul" [] <| List.map (\( groupId, case_ ) -> ( String.fromInt groupId, lazy (displayImportedCase now <| checkListener groupId) case_ )) <| Dict.toList importedData.predictions.cases ]
         ]
 
 
-displayImportedPredictionGroup : Now -> ( Int, ImportedCase ) -> Html Msg
-displayImportedPredictionGroup now ( _, case_ ) =
-    dl []
-        [ dt [] [ text "Reference" ]
-        , dd [] [ text <| Maybe.withDefault case_.reference.ciphertext case_.reference.cleartext ]
-        , dt [] [ text "Created" ]
-        , dd [] [ displayTime now case_.created ]
-        , dt [] [ text "Predictions" ]
-        , dd [] [ ul [] <| List.map (displayImportedPrediction now >> List.singleton >> li []) case_.predictions ]
+displayImportedCase : Now -> (Bool -> Msg) -> ImportedCase -> Html Msg
+displayImportedCase now checkListener case_ =
+    li []
+        [ dl []
+            [ dt [] [ text "Import" ]
+            , dd [] [ input [ type_ "checkbox", checked case_.selected, onCheck checkListener ] [] ]
+            , dt [] [ text "Reference" ]
+            , dd [] [ text <| Maybe.withDefault case_.reference.ciphertext case_.reference.cleartext ]
+            , dt [] [ text "Created" ]
+            , dd [] [ displayTime now case_.created ]
+            , dt [] [ text "Predictions" ]
+            , dd [] [ ul [] <| List.map (displayImportedPrediction now >> List.singleton >> li []) case_.predictions ]
+            ]
         ]
 
 
