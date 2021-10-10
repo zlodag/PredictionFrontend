@@ -84,7 +84,7 @@ preparePredictionInput : PredictionData -> Maybe PredictionInput
 preparePredictionInput prediction =
     case ( FormField.getValue prediction.diagnosis, FormField.getValue prediction.confidence ) of
         ( Ok diagnosis, Ok confidence ) ->
-            Just <| PredictionInput diagnosis confidence
+            Just <| PredictionInput diagnosis confidence Absent
 
         _ ->
             Nothing
@@ -105,6 +105,7 @@ prepareCaseInput userId caseData =
                 Just <|
                     CaseInput
                         reference
+                        Absent
                         userId
                         (case caseData.groupId of
                             Just id ->
@@ -115,6 +116,7 @@ prepareCaseInput userId caseData =
                         )
                         deadline
                         predictions
+                        []
 
         _ ->
             Nothing
