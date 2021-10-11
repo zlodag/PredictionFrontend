@@ -146,7 +146,7 @@ init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
 init _ url key =
     ( Model key (Now Time.utc <| Time.millisToPosix 0) NoData (SignedOut []) []
     , Cmd.batch
-        [ Task.perform AdjustTimeZone Time.here
+        [ Task.perform identity <| Task.map2 NewTime Time.here Time.now
         , userListQuery |> makeRequest (usersResponseHandler url)
         ]
     )
@@ -157,8 +157,7 @@ init _ url key =
 
 
 type Msg
-    = Tick Time.Posix
-    | AdjustTimeZone Time.Zone
+    = NewTime Time.Zone Time.Posix
     | LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
     | GotAuth Url.Url Auth
@@ -185,14 +184,9 @@ type Msg
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        Tick newTime ->
-            ( { model | now = Now model.now.zone newTime }
+        NewTime zone time ->
+            ( { model | now = Now zone time }
             , Cmd.none
-            )
-
-        AdjustTimeZone newZone ->
-            ( { model | now = Now newZone model.now.posix }
-            , Task.perform Tick Time.now
             )
 
         LinkClicked urlRequest ->
@@ -232,7 +226,7 @@ update msg model =
 
         StateChanged state ->
             ( { model | state = state }
-            , Cmd.none
+            , Task.perform (NewTime model.now.zone) Time.now
             )
 
         UpdateCase caseData ->
@@ -510,10 +504,7 @@ updateCase getUpdatedCase oldCase newData =
 
 subscriptions : Model -> Sub Msg
 subscriptions _ =
-    Sub.batch
-        [ Time.every 60000 Tick
-        , decryptReceiver GotDecrypted
-        ]
+    decryptReceiver GotDecrypted
 
 
 
