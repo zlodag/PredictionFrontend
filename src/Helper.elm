@@ -1,21 +1,23 @@
-module Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, getShortDateString, getTimeString, validateConfidence, validateDeadline, viewData)
+module Helper exposing (..)
 
 import Dict exposing (Dict)
 import FormField
 import Graphql.Http exposing (HttpError(..))
 import Graphql.Http.GraphqlError exposing (GraphqlError, Location, PossiblyParsedData(..))
-import Html exposing (Html, dd, div, dl, dt, li, option, pre, select, text, ul)
-import Html.Attributes exposing (selected, value)
+import Html exposing (Html, a, dd, div, dl, dt, li, option, pre, select, span, text, ul)
+import Html.Attributes exposing (href, selected, title, value)
 import Html.Events exposing (onInput)
 import Http
 import Iso8601
 import Json.Decode as Decode
 import List exposing (map)
+import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.Scalar exposing (Id(..))
 import RemoteData exposing (RemoteData)
 import ScalarCodecs exposing (Timestamp)
 import String exposing (fromInt)
-import Time exposing (Month(..))
+import Time exposing (Month(..), Weekday(..))
+import Time.Distance
 
 
 viewData : (a -> Html msg) -> GraphqlRemoteData a -> Html msg
@@ -257,10 +259,37 @@ getShortDateString zone time =
         ++ toPaddedString 2 (remainderBy 100 <| Time.toYear zone time)
 
 
+toWeekday : Weekday -> String
+toWeekday weekday =
+    case weekday of
+        Mon ->
+            "Monday"
+
+        Tue ->
+            "Tuesday"
+
+        Wed ->
+            "Wednesday"
+
+        Thu ->
+            "Thursday"
+
+        Fri ->
+            "Friday"
+
+        Sat ->
+            "Saturday"
+
+        Sun ->
+            "Sunday"
+
+
 getTimeString : Time.Zone -> Time.Posix -> String
 getTimeString zone time =
-    -- DD
-    toPaddedString 2 (Time.toDay zone time)
+    toWeekday (Time.toWeekday zone time)
+        ++ " "
+        -- DD
+        ++ toPaddedString 2 (Time.toDay zone time)
         ++ "/"
         -- MM
         ++ toPaddedString 2 (fromMonth (Time.toMonth zone time))
@@ -276,3 +305,47 @@ getTimeString zone time =
         ++ ":"
         -- ss
         ++ toPaddedString 2 (Time.toSecond zone time)
+
+
+displayNamedNodeLink : String -> NamedNodeData -> Html msg
+displayNamedNodeLink base_path node =
+    case node.id of
+        Id id ->
+            a [ href <| base_path ++ "/" ++ id ] [ text node.name ]
+
+
+displayOutcome : Outcome -> String
+displayOutcome outcome =
+    case outcome of
+        Right ->
+            "Right"
+
+        Wrong ->
+            "Wrong"
+
+        Indeterminate ->
+            "Indeterminate"
+
+
+type alias Now =
+    { zone : Time.Zone
+    , posix : Time.Posix
+    }
+
+
+displayTime : Now -> Time.Posix -> Html msg
+displayTime now timeToDisplay =
+    span [ title <| getTimeString now.zone timeToDisplay ] [ text <| " " ++ Time.Distance.inWords timeToDisplay now.posix ]
+
+
+displayOutcomeSymbol : Outcome -> String
+displayOutcomeSymbol outcome =
+    case outcome of
+        Right ->
+            "✔"
+
+        Wrong ->
+            "✗"
+
+        Indeterminate ->
+            "?"

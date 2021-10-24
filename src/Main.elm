@@ -6,15 +6,16 @@ import Chart as C
 import Chart.Attributes as CA
 import Chart.Events as CE
 import Chart.Item as CI
+import Config exposing (graphQlEndpoint)
 import Dict exposing (Dict)
 import FormField exposing (Field)
 import Graphql.Http exposing (Error, HttpError(..), Request)
 import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument as OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
-import Helper exposing (GraphqlRemoteData, NamedNodeData, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, getShortDateString, getTimeString, validateConfidence, validateDeadline, viewData)
-import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, option, select, span, strong, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (checked, disabled, for, href, id, placeholder, selected, step, title, type_, value)
+import Helper exposing (GraphqlRemoteData, NamedNodeData, Now, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, displayNamedNodeLink, displayOutcome, displayOutcomeSymbol, displayTime, getShortDateString, validateConfidence, validateDeadline, viewData)
+import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, option, select, strong, table, tbody, td, text, th, thead, tr, ul)
+import Html.Attributes exposing (checked, disabled, for, href, id, placeholder, selected, step, type_, value)
 import Html.Events exposing (onCheck, onClick, onInput, onSubmit)
 import Html.Keyed as Keyed
 import Html.Lazy exposing (lazy)
@@ -22,6 +23,7 @@ import Http
 import Iso8601
 import Json.Decode as D
 import NewCase
+import PredictionList
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.InputObject exposing (CaseInput, CommentInput, PredictionInput)
 import Predictions.Interface exposing (Event)
@@ -49,7 +51,6 @@ import String
 import Svg as S
 import Task
 import Time
-import Time.Distance
 import Url
 import Url.Builder
 import Url.Parser exposing ((</>), Parser, map, oneOf, s, string, top)
@@ -89,6 +90,7 @@ type State
     = WelcomePage
     | UserDetail (GraphqlRemoteData UserDetailData)
     | ScoreDetail (List (CI.One Score CI.Dot)) (GraphqlRemoteData (List Score))
+    | PredictionList PredictionList.Params PredictionList.Predictions
     | EventList (GraphqlRemoteData (List EventResult))
     | GroupList (GraphqlRemoteData (List NamedNodeData))
     | GroupDetail (GraphqlRemoteData GroupDetailData)
@@ -104,12 +106,6 @@ type alias Model =
     , state : State
     , auth : Auth
     , allUsers : List UserCandidate
-    }
-
-
-type alias Now =
-    { zone : Time.Zone
-    , posix : Time.Posix
     }
 
 
@@ -179,6 +175,8 @@ type Msg
     | GotDecrypted (List EncryptedReference)
     | ImportToDatabase (List CaseInput)
     | CasesImported (GraphqlRemoteData Int)
+    | FetchPredictions PredictionList.Params
+    | GotPredictions PredictionList.Params PredictionList.Predictions
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -440,6 +438,12 @@ update msg model =
                 _ ->
                     ( model, Cmd.none )
 
+        FetchPredictions params ->
+            ( { model | state = PredictionList params Loading }, PredictionList.fetch GotPredictions params )
+
+        GotPredictions params predictions ->
+            ( { model | state = PredictionList params predictions }, Cmd.none )
+
 
 expectJson : (Result (Html msg) a -> msg) -> D.Decoder a -> Http.Expect msg
 expectJson toMsg decoder =
@@ -525,6 +529,7 @@ view model =
                             case userCandidate.node.id of
                                 Id userId ->
                                     [ li [] [ a [ href <| "/user/" ++ userId ] [ text "My user page" ] ]
+                                    , li [] [ a [ href <| "/user/" ++ userId ++ "/predictions" ] [ text "Predictions" ] ]
                                     , li [] [ a [ href <| "/user/" ++ userId ++ "/events" ] [ text "Events" ] ]
                                     , li [] [ a [ href "/new" ] [ text "New prediction" ] ]
                                     , li [] [ a [ href "/import" ] [ text "Import" ] ]
@@ -617,6 +622,9 @@ displayData model =
 
                 ImportFromPB importParams groupId importedData ->
                     displayImport model.now user importParams groupId importedData
+
+                PredictionList params predictions ->
+                    PredictionList.display model.now GotPredictions FetchPredictions params predictions
 
         SignedOut _ ->
             text "Please sign in to begin"
@@ -987,13 +995,6 @@ displayImport now user importParams groupId remoteData =
             html
 
 
-displayNamedNodeLink : String -> NamedNodeData -> Html msg
-displayNamedNodeLink base_path node =
-    case node.id of
-        Id id ->
-            a [ href <| base_path ++ "/" ++ id ] [ text node.name ]
-
-
 displayNamedNodeList : String -> List NamedNodeData -> Html msg
 displayNamedNodeList base_path nodes =
     ul [] <| displayListItems (displayNamedNodeLink base_path >> List.singleton) nodes
@@ -1042,19 +1043,7 @@ displayScore now score =
     , td [] [ displayNamedNodeLink "/case" score.case_ ]
     , td [] [ text score.diagnosis ]
     , td [] [ text <| String.fromInt score.confidence ++ "%" ]
-    , td []
-        [ text
-            (case score.outcome of
-                Right ->
-                    "✔"
-
-                Wrong ->
-                    "✗"
-
-                Indeterminate ->
-                    "?"
-            )
-        ]
+    , td [] [ text <| displayOutcomeSymbol score.outcome ]
     , td [] [ text <| Round.round 4 score.brierScore ]
     , td [] [ text <| Round.round 4 score.averageBrierScore ]
     , td [] [ text <| Round.round 4 score.adjustedBrierScore ]
@@ -1205,11 +1194,6 @@ displayScores now hovering scores =
             , tbody [] <| List.map (displayScore now >> tr []) scores
             ]
         ]
-
-
-displayTime : Now -> Time.Posix -> Html msg
-displayTime now timeToDisplay =
-    span [ title <| getTimeString now.zone timeToDisplay ] [ text <| " " ++ Time.Distance.inWords timeToDisplay now.posix ]
 
 
 displayEvent : Now -> EventResult -> Html msg
@@ -1579,19 +1563,6 @@ displayWager now wager =
     ]
 
 
-displayOutcome : Outcome -> String
-displayOutcome outcome =
-    case outcome of
-        Right ->
-            "Right"
-
-        Wrong ->
-            "Wrong"
-
-        Indeterminate ->
-            "Indeterminate"
-
-
 
 -- Parse URL
 
@@ -1601,6 +1572,7 @@ type Route
     | User Id
     | UserScore Id
     | Events Id
+    | Predictions Id
     | Groups
     | Group Id
     | Case Id
@@ -1614,6 +1586,7 @@ routeParser =
         [ map Welcome top
         , map (User << Id) <| s "user" </> string
         , map (UserScore << Id) <| s "user" </> string </> s "score"
+        , map (Predictions << Id) <| s "user" </> string </> s "predictions"
         , map (Events << Id) <| s "user" </> string </> s "events"
         , map Groups <| s "groups"
         , map (Group << Id) <| s "group" </> string
@@ -1634,6 +1607,15 @@ parseUrlAndRequest model url =
 
         Just (UserScore userId) ->
             ( model, Query.user { id = userId } (User.scores <| mapToScore) |> makeRequest (ScoreDetail [] >> StateChanged) )
+
+        Just (Predictions userId) ->
+            let
+                params =
+                    PredictionList.initial userId
+            in
+            ( { model | state = PredictionList params Loading }
+            , PredictionList.fetch GotPredictions params
+            )
 
         Just (Events userId) ->
             let
@@ -1903,12 +1885,8 @@ mapToJudgementData =
 -- Helper for fetch
 
 
-makeRequest : (GraphqlRemoteData decodesTo -> Msg) -> SelectionSet decodesTo RootQuery -> Cmd Msg
+makeRequest : (GraphqlRemoteData decodesTo -> msg) -> SelectionSet decodesTo RootQuery -> Cmd msg
 makeRequest msgConstructor set =
     set
         |> Graphql.Http.queryRequest graphQlEndpoint
         |> Graphql.Http.send (RemoteData.fromResult >> msgConstructor)
-
-
-graphQlEndpoint =
-    "http://localhost:3000/graphql"
