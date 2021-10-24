@@ -1359,6 +1359,8 @@ displayCase now user caseDetail =
                 displayListItems (displayComment now) caseDetail.comments
                     ++ displayNewComment user caseDetail
             ]
+        , dt [] [ text <| "Tags (" ++ String.fromInt (List.length caseDetail.tags) ++ ")" ]
+        , dd [] [ ul [] <| List.map (text >> List.singleton >> li []) caseDetail.tags ]
         ]
 
 
@@ -1818,17 +1820,19 @@ type alias CaseDetailData =
     , deadline : Timestamp
     , diagnoses : List DiagnosisDetailData
     , comments : List CommentData
+    , tags : List String
     }
 
 
 mapToCaseDetailData =
-    SelectionSet.map6 (CaseDetailData Viewing)
+    SelectionSet.map7 (CaseDetailData Viewing)
         (SelectionSet.map2 NamedNodeData Case.id Case.reference)
         (Case.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
         (Case.group <| SelectionSet.map2 NamedNodeData Group.id Group.name)
         Case.deadline
         (Case.diagnoses <| mapToDiagnosisDetailData)
         (Case.comments <| mapToCommentData)
+        Case.tags
 
 
 type alias CaseDetailResponse =
