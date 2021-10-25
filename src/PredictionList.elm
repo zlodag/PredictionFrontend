@@ -114,7 +114,7 @@ displayPrediction : Now -> Prediction -> Html msg
 displayPrediction now prediction =
     tr []
         [ td [] [ displayTime now prediction.created ]
-        , td [] [ displayNamedNodeLink "/case" prediction.case_ ]
+        , td [] [ displayNamedNodeLink [ "case" ] prediction.case_ ]
         , td [] [ Maybe.map displayOutcomeSymbol prediction.outcome |> Maybe.withDefault "..." |> text ]
         , td [] [ text prediction.diagnosis ]
         ]

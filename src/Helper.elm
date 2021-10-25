@@ -18,6 +18,7 @@ import ScalarCodecs exposing (Timestamp)
 import String exposing (fromInt)
 import Time exposing (Month(..), Weekday(..))
 import Time.Distance
+import Url.Builder
 
 
 viewData : (a -> Html msg) -> GraphqlRemoteData a -> Html msg
@@ -307,11 +308,21 @@ getTimeString zone time =
         ++ toPaddedString 2 (Time.toSecond zone time)
 
 
-displayNamedNodeLink : String -> NamedNodeData -> Html msg
+displayNamedNodeLink : List String -> NamedNodeData -> Html msg
 displayNamedNodeLink base_path node =
     case node.id of
         Id id ->
-            a [ href <| base_path ++ "/" ++ id ] [ text node.name ]
+            a [ href <| Url.Builder.absolute (base_path ++ [ id ]) [] ] [ text node.name ]
+
+
+displayNamedNodeList : List String -> List NamedNodeData -> Html msg
+displayNamedNodeList base_path nodes =
+    ul [] <| displayListItems (displayNamedNodeLink base_path >> List.singleton) nodes
+
+
+displayListItems : (a -> List (Html msg)) -> List a -> List (Html msg)
+displayListItems displayFunction list =
+    List.map (li [] << displayFunction) list
 
 
 displayOutcome : Outcome -> String

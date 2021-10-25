@@ -2,6 +2,7 @@ port module Main exposing (main)
 
 import Browser exposing (Document)
 import Browser.Navigation as Nav
+import Cases exposing (displayCaseList)
 import Chart as C
 import Chart.Attributes as CA
 import Chart.Events as CE
@@ -13,7 +14,7 @@ import Graphql.Http exposing (Error, HttpError(..), Request)
 import Graphql.Operation exposing (RootMutation, RootQuery)
 import Graphql.OptionalArgument as OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
-import Helper exposing (GraphqlRemoteData, NamedNodeData, Now, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, displayNamedNodeLink, displayOutcome, displayOutcomeSymbol, displayTime, getShortDateString, validateConfidence, validateDeadline, viewData)
+import Helper exposing (GraphqlRemoteData, NamedNodeData, Now, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, displayListItems, displayNamedNodeLink, displayNamedNodeList, displayOutcome, displayOutcomeSymbol, displayTime, getShortDateString, validateConfidence, validateDeadline, viewData)
 import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, option, select, strong, table, tbody, td, text, th, thead, tr, ul)
 import Html.Attributes exposing (checked, disabled, for, href, id, placeholder, selected, step, type_, value)
 import Html.Events exposing (onCheck, onClick, onInput, onSubmit)
@@ -53,7 +54,8 @@ import Task
 import Time
 import Url
 import Url.Builder
-import Url.Parser exposing ((</>), Parser, map, oneOf, s, string, top)
+import Url.Parser exposing ((</>), (<?>), Parser, map, oneOf, s, string, top)
+import Url.Parser.Query
 
 
 
@@ -91,6 +93,7 @@ type State
     | UserDetail (GraphqlRemoteData UserDetailData)
     | ScoreDetail (List (CI.One Score CI.Dot)) (GraphqlRemoteData (List Score))
     | PredictionList PredictionList.Params PredictionList.Predictions
+    | CaseList Cases.Params Cases.Cases
     | EventList (GraphqlRemoteData (List EventResult))
     | GroupList (GraphqlRemoteData (List NamedNodeData))
     | GroupDetail (GraphqlRemoteData GroupDetailData)
@@ -521,18 +524,19 @@ view model =
     , body =
         [ displayAuth model.auth
         , ul [] <|
-            [ li [] [ a [ href "/" ] [ text "Home" ] ]
-            , li [] [ a [ href "/graphql" ] [ text "GraphiQL" ] ]
+            [ li [] [ a [ href <| Url.Builder.absolute [] [] ] [ text "Home" ] ]
+            , li [] [ a [ href <| Url.Builder.absolute [ "graphql" ] [] ] [ text "GraphiQL" ] ]
             ]
                 ++ (case model.auth of
                         SignedIn _ userCandidate ->
                             case userCandidate.node.id of
                                 Id userId ->
-                                    [ li [] [ a [ href <| "/user/" ++ userId ] [ text "My user page" ] ]
-                                    , li [] [ a [ href <| "/user/" ++ userId ++ "/predictions" ] [ text "Predictions" ] ]
-                                    , li [] [ a [ href <| "/user/" ++ userId ++ "/events" ] [ text "Events" ] ]
-                                    , li [] [ a [ href "/new" ] [ text "New prediction" ] ]
-                                    , li [] [ a [ href "/import" ] [ text "Import" ] ]
+                                    [ li [] [ a [ href <| Url.Builder.absolute [ "user", userId ] [] ] [ text "My user page" ] ]
+                                    , li [] [ a [ href <| Url.Builder.absolute [ "cases" ] [] ] [ text "Cases" ] ]
+                                    , li [] [ a [ href <| Url.Builder.absolute [ "user", userId, "predictions" ] [] ] [ text "Predictions" ] ]
+                                    , li [] [ a [ href <| Url.Builder.absolute [ "user", userId, "events" ] [] ] [ text "Events" ] ]
+                                    , li [] [ a [ href <| Url.Builder.absolute [ "new" ] [] ] [ text "New prediction" ] ]
+                                    , li [] [ a [ href <| Url.Builder.absolute [ "import" ] [] ] [ text "Import" ] ]
                                     ]
 
                         SignedOut _ ->
@@ -609,7 +613,10 @@ displayData model =
                     viewData (displayEvents model.now) graphqlRemoteData
 
                 GroupList graphqlRemoteData ->
-                    viewData (displayNamedNodeList "/group") graphqlRemoteData
+                    viewData (displayNamedNodeList [ "group" ]) graphqlRemoteData
+
+                CaseList tag graphqlRemoteData ->
+                    viewData (displayCaseList tag) graphqlRemoteData
 
                 GroupDetail graphqlRemoteData ->
                     viewData displayGroup graphqlRemoteData
@@ -995,52 +1002,37 @@ displayImport now user importParams groupId remoteData =
             html
 
 
-displayNamedNodeList : String -> List NamedNodeData -> Html msg
-displayNamedNodeList base_path nodes =
-    ul [] <| displayListItems (displayNamedNodeLink base_path >> List.singleton) nodes
-
-
-displayListItems : (a -> List (Html msg)) -> List a -> List (Html msg)
-displayListItems displayFunction list =
-    List.map (li [] << displayFunction) list
-
-
 displayUser : Now -> UserDetailData -> Html msg
 displayUser now user =
     dl []
         [ dt [] [ text "Name" ]
-        , dd [] [ displayNamedNodeLink "/user" user.node ]
+        , dd [] [ displayNamedNodeLink [ "user" ] user.node ]
         , dt [] [ text "Created" ]
         , dd [] [ displayTime now user.created ]
         , dt [] [ text "Score" ]
         , dd []
             [ case user.score of
                 Just score ->
-                    a
-                        [ href <|
-                            "/user/"
-                                ++ (case user.node.id of
-                                        Id id ->
-                                            id
-                                   )
-                                ++ "/score"
-                        ]
-                        [ text <| Round.round 4 score ]
+                    case user.node.id of
+                        Id id ->
+                            a [ href <| Url.Builder.absolute [ "user", id, "score" ] [] ] [ text <| Round.round 4 score ]
 
                 Nothing ->
                     text "No predictions judged yet"
             ]
         , dt [] [ text <| "Groups (" ++ String.fromInt (List.length user.groups) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/group" user.groups ]
-        , dt [] [ text <| "Cases (" ++ String.fromInt (List.length user.cases) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/case" user.cases ]
+        , dd [] [ displayNamedNodeList [ "group" ] user.groups ]
+        , dt [] [ text <| "Cases created (" ++ String.fromInt (List.length user.casesCreated) ++ ")" ]
+        , dd [] [ displayNamedNodeList [ "case" ] user.casesCreated ]
+        , dt [] [ text <| "Tags (" ++ String.fromInt (List.length user.tags) ++ ")" ]
+        , dd [] [ ul [] <| List.map (\tag -> li [] [ a [ href <| Url.Builder.absolute [ "cases" ] <| [ Url.Builder.string "tag" tag ] ] [ text tag ] ]) user.tags ]
         ]
 
 
 displayScore : Now -> Score -> List (Html msg)
 displayScore now score =
     [ td [] [ displayTime now score.judged ]
-    , td [] [ displayNamedNodeLink "/case" score.case_ ]
+    , td [] [ displayNamedNodeLink [ "case" ] score.case_ ]
     , td [] [ text score.diagnosis ]
     , td [] [ text <| String.fromInt score.confidence ++ "%" ]
     , td [] [ text <| displayOutcomeSymbol score.outcome ]
@@ -1203,43 +1195,43 @@ displayEvent now event =
             WagerActivity activityData diagnosis confidence ->
                 [ displayTime now activityData.event.timestamp
                 , text ": "
-                , displayNamedNodeLink "/user" activityData.user
+                , displayNamedNodeLink [ "user" ] activityData.user
                 , text <| " added a wager on "
-                , displayNamedNodeLink "/case" activityData.event.case_
+                , displayNamedNodeLink [ "case" ] activityData.event.case_
                 , text <| ": " ++ diagnosis ++ " (" ++ String.fromInt confidence ++ "%)"
                 ]
 
             JudgementActivity activityData diagnosis outcome ->
                 [ displayTime now activityData.event.timestamp
                 , text ": "
-                , displayNamedNodeLink "/user" activityData.user
+                , displayNamedNodeLink [ "user" ] activityData.user
                 , text <| " judged '" ++ diagnosis ++ "' as " ++ displayOutcome outcome ++ " on case: "
-                , displayNamedNodeLink "/case" activityData.event.case_
+                , displayNamedNodeLink [ "case" ] activityData.event.case_
                 ]
 
             CommentActivity activityData comment ->
                 [ displayTime now activityData.event.timestamp
                 , text ": "
-                , displayNamedNodeLink "/user" activityData.user
+                , displayNamedNodeLink [ "user" ] activityData.user
                 , text " commented on "
-                , displayNamedNodeLink "/case" activityData.event.case_
+                , displayNamedNodeLink [ "case" ] activityData.event.case_
                 , text <| ": '" ++ comment ++ "'"
                 ]
 
             GroupCaseActivity activityData group ->
                 [ displayTime now activityData.event.timestamp
                 , text ": "
-                , displayNamedNodeLink "/user" activityData.user
+                , displayNamedNodeLink [ "user" ] activityData.user
                 , text " added a case in group "
-                , displayNamedNodeLink "/group" group
+                , displayNamedNodeLink [ "group" ] group
                 , text ": "
-                , displayNamedNodeLink "/case" activityData.event.case_
+                , displayNamedNodeLink [ "case" ] activityData.event.case_
                 ]
 
             DeadlineEvent eventData ->
                 [ displayTime now eventData.timestamp
                 , text ": Deadline reached for "
-                , displayNamedNodeLink "/case" eventData.case_
+                , displayNamedNodeLink [ "case" ] eventData.case_
                 , text "!"
                 ]
         )
@@ -1254,11 +1246,11 @@ displayGroup : GroupDetailData -> Html msg
 displayGroup group =
     dl []
         [ dt [] [ text "Name" ]
-        , dd [] [ displayNamedNodeLink "/group" group.node ]
+        , dd [] [ displayNamedNodeLink [ "group" ] group.node ]
         , dt [] [ text <| "Members (" ++ String.fromInt (List.length group.members) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/user" group.members ]
+        , dd [] [ displayNamedNodeList [ "user" ] group.members ]
         , dt [] [ text <| "Cases (" ++ String.fromInt (List.length group.cases) ++ ")" ]
-        , dd [] [ displayNamedNodeList "/case" group.cases ]
+        , dd [] [ displayNamedNodeList [ "case" ] group.cases ]
         ]
 
 
@@ -1273,7 +1265,7 @@ displayCaseGroup user caseDetail =
         ( viewGroup, groupId ) =
             case caseDetail.group of
                 Just g ->
-                    ( [ displayNamedNodeLink "/group" g ], Just g.id )
+                    ( [ displayNamedNodeLink [ "group" ] g ], Just g.id )
 
                 Nothing ->
                     ( [ text "None" ], Nothing )
@@ -1344,11 +1336,11 @@ displayCase : Now -> UserCandidate -> CaseDetailData -> Html Msg
 displayCase now user caseDetail =
     dl []
         [ dt [] [ text "Reference" ]
-        , dd [] [ displayNamedNodeLink "/case" caseDetail.node ]
+        , dd [] [ displayNamedNodeLink [ "case" ] caseDetail.node ]
         , dt [] [ text "Deadline" ]
         , dd [] <| displayDeadline now user caseDetail
         , dt [] [ text "Creator" ]
-        , dd [] [ displayNamedNodeLink "/user" caseDetail.creator ]
+        , dd [] [ displayNamedNodeLink [ "user" ] caseDetail.creator ]
         , dt [] [ text "Group" ]
         , dd [] <| displayCaseGroup user caseDetail
         , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length caseDetail.diagnoses) ++ ")" ]
@@ -1368,7 +1360,7 @@ displayDiagnosis : Now -> UserCandidate -> CaseDetailData -> DiagnosisDetailData
 displayDiagnosis now user caseDetail diagnosis =
     let
         judgedAsBy outcome judgedBy =
-            [ text " Judged as " ] ++ outcome ++ [ text " by ", displayNamedNodeLink "/user" judgedBy ]
+            [ text " Judged as " ] ++ outcome ++ [ text " by ", displayNamedNodeLink [ "user" ] judgedBy ]
     in
     [ h4 [] [ text diagnosis.node.name ]
     , ul [] <|
@@ -1431,7 +1423,7 @@ displayDiagnosis now user caseDetail diagnosis =
                                 in
                                 if id == diagnosis.node.id then
                                     [ form formAttributes
-                                        [ displayNamedNodeLink "/user" user.node
+                                        [ displayNamedNodeLink [ "user" ] user.node
                                         , text " estimated "
                                         , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue newWager, FormField.onInput changeWager newWager ] []
                                         , text "%"
@@ -1489,7 +1481,7 @@ displayNewDiagnosis user caseDetail =
                 [ h4 [] [ input [ type_ "text", placeholder "Diagnosis", FormField.withValue prediction.diagnosis, FormField.onInput changeDiagnosis prediction.diagnosis ] [] ]
                 , ul []
                     [ li []
-                        [ displayNamedNodeLink "/user" user.node
+                        [ displayNamedNodeLink [ "user" ] user.node
                         , text " estimated "
                         , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue prediction.confidence, FormField.onInput changeConfidence prediction.confidence ] []
                         , text "%"
@@ -1530,7 +1522,7 @@ displayNewComment user caseDetail =
                             ( True, [] )
             in
             [ li []
-                [ displayNamedNodeLink "/user" user.node
+                [ displayNamedNodeLink [ "user" ] user.node
                 , blockquote []
                     [ form formAttributes
                         [ input [ type_ "text", placeholder "Enter comment", FormField.withValue newComment, FormField.onInput changeComment newComment ] []
@@ -1550,7 +1542,7 @@ displayNewComment user caseDetail =
 
 displayComment : Now -> CommentData -> List (Html msg)
 displayComment now comment =
-    [ displayNamedNodeLink "/user" comment.creator
+    [ displayNamedNodeLink [ "user" ] comment.creator
     , displayTime now comment.timestamp
     , blockquote [] [ text comment.text ]
     ]
@@ -1558,7 +1550,7 @@ displayComment now comment =
 
 displayWager : Now -> WagerData -> List (Html msg)
 displayWager now wager =
-    [ displayNamedNodeLink "/user" wager.creator
+    [ displayNamedNodeLink [ "user" ] wager.creator
     , text " estimated "
     , b [] [ text <| String.fromInt wager.confidence ++ "%" ]
     , displayTime now wager.timestamp
@@ -1578,6 +1570,7 @@ type Route
     | Groups
     | Group Id
     | Case Id
+    | Cases (Maybe String)
     | New
     | Import
 
@@ -1591,6 +1584,7 @@ routeParser =
         , map (Predictions << Id) <| s "user" </> string </> s "predictions"
         , map (Events << Id) <| s "user" </> string </> s "events"
         , map Groups <| s "groups"
+        , map Cases <| s "cases" <?> Url.Parser.Query.string "tag"
         , map (Group << Id) <| s "group" </> string
         , map (Case << Id) <| s "case" </> string
         , map New <| s "new"
@@ -1672,6 +1666,25 @@ parseUrlAndRequest model url =
         Just Groups ->
             ( model, Query.groups identity (SelectionSet.map2 NamedNodeData Group.id Group.name) |> makeRequest (GroupList >> StateChanged) )
 
+        Just (Cases tag) ->
+            case model.auth of
+                SignedIn _ user ->
+                    let
+                        params =
+                            Cases.Params user.node.id tag
+                    in
+                    ( { model | state = CaseList params Loading }
+                    , Query.cases
+                        (\optionalParams -> { optionalParams | tag = OptionalArgument.fromMaybe params.tag })
+                        { userId = params.userId }
+                        (SelectionSet.map2 NamedNodeData Case.id Case.reference)
+                        |> makeRequest (CaseList params >> StateChanged)
+                    )
+
+                _ ->
+                    --todo
+                    ( { model | state = NoData }, Cmd.none )
+
         Just (Group id) ->
             ( model, Query.group { id = id } mapToGroupDetailData |> makeRequest (GroupDetail >> StateChanged) )
 
@@ -1704,17 +1717,19 @@ type alias UserDetailData =
     , created : Timestamp
     , score : Maybe Float
     , groups : List NamedNodeData
-    , cases : List CaseLimitedData
+    , casesCreated : List NamedNodeData
+    , tags : List String
     }
 
 
 mapToUserDetailData =
-    SelectionSet.map5 UserDetailData
+    SelectionSet.map6 UserDetailData
         (SelectionSet.map2 NamedNodeData User.id User.name)
         User.created
         (User.score { adjusted = False })
         (User.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name)
-        (User.cases <| SelectionSet.map2 NamedNodeData Case.id Case.reference)
+        (User.casesCreated <| SelectionSet.map2 NamedNodeData Case.id Case.reference)
+        User.tags
 
 
 type alias UserDetailResponse =
@@ -1773,7 +1788,7 @@ type EventResult
 type alias GroupDetailData =
     { node : NamedNodeData
     , members : List NamedNodeData
-    , cases : List CaseLimitedData
+    , cases : List NamedNodeData
     }
 
 
@@ -1782,10 +1797,6 @@ mapToGroupDetailData =
         (SelectionSet.map2 NamedNodeData Group.id Group.name)
         (Group.members <| SelectionSet.map2 NamedNodeData User.id User.name)
         (Group.cases <| SelectionSet.map2 NamedNodeData Case.id Case.reference)
-
-
-type alias CaseLimitedData =
-    NamedNodeData
 
 
 type alias CommentData =
