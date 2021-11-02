@@ -81,8 +81,7 @@ blankCredentials =
 
 
 type alias UserInfo =
-    { id : Id
-    , name : String
+    { node : NamedNodeData
     , accessToken : String
     , refreshToken : String
     }
@@ -176,10 +175,9 @@ update msg model =
             let
                 userDecoder : D.Decoder UserInfo
                 userDecoder =
-                    D.map4
+                    D.map3
                         UserInfo
-                        (D.at [ "user", "id" ] D.string |> D.map Id)
-                        (D.at [ "user", "name" ] D.string)
+                        (D.field "user" <| D.map2 NamedNodeData (D.field "id" <| D.map Id D.string) (D.field "name" D.string))
                         (D.field "accessToken" D.string)
                         (D.field "refreshToken" D.string)
 
@@ -249,7 +247,7 @@ parseUrlAndRequest url model =
             ( model, Cmd.none )
 
         ( LoggedIn userData _, Just (UserDetailRoute userId) ) ->
-            if userId == userData.id then
+            if userId == userData.node.id then
                 ( { model | auth = LoggedIn userData (Me Loading) }
                 , SelectionSet.map3 MyDetails
                     (SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name)
@@ -270,7 +268,7 @@ parseUrlAndRequest url model =
             ( { model | auth = LoggedIn userData (GroupList Loading) }
             , SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name
                 |> Predictions.Object.User.groups
-                |> Predictions.Query.user { id = userData.id }
+                |> Predictions.Query.user { id = userData.node.id }
                 |> sendRequest GroupList userData
             )
 
@@ -348,7 +346,7 @@ refreshTokenAndTryAgain request ( originalUser, originalError ) =
                 Http.GoodStatus_ _ body ->
                     D.decodeString
                         (D.map2
-                            (UserInfo originalUser.id originalUser.name)
+                            (UserInfo originalUser.node)
                             (D.field "accessToken" D.string)
                             (D.field "refreshToken" D.string)
                         )
@@ -428,7 +426,7 @@ viewModel model =
             [ displaySignInForm (LoggedOut Nothing >> DataUpdated) True credentials ]
 
         LoggedIn userInfo data ->
-            [ div [] [ text "Welcome, ", displayNamedNode userUrl <| NamedNodeData userInfo.id userInfo.name ]
+            [ div [] [ text "Welcome, ", displayNamedNode userUrl userInfo.node ]
             , div [] [ button [ type_ "button", onClick Logout ] [ text "Log out" ] ]
             , hr [] []
             , ul []
