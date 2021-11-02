@@ -71,12 +71,6 @@ type Msg
     | GotPredictions PredictionList.Params PredictionList.Predictions
 
 
-type alias Now =
-    { zone : Time.Zone
-    , posix : Time.Posix
-    }
-
-
 type alias GraphqlRemoteData a =
     RemoteData (Graphql.Http.Error a) a
 

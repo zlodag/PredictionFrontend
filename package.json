@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "scripts": {
     "build": "elm make src/Main.elm --output=main.js",
+    "login": "elm make src/Login.elm --output=main.js",
     "api": "elm-graphql http://localhost:3000/graphql --base Predictions --scalar-codecs ScalarCodecs"
   },
   "devDependencies": {
