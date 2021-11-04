@@ -1,65 +1,37 @@
-port module Main exposing (main)
+module Main exposing (main)
 
 import Browser exposing (Document)
 import Browser.Navigation as Nav
-import Cases exposing (displayCaseList)
 import Chart as C
 import Chart.Attributes as CA
 import Chart.Events as CE
 import Chart.Item as CI
-import Config exposing (graphQlEndpoint)
-import Dict exposing (Dict)
-import FormField exposing (Field)
-import Graphql.Http exposing (Error, HttpError(..), Request)
-import Graphql.Operation exposing (RootMutation, RootQuery)
-import Graphql.OptionalArgument as OptionalArgument exposing (OptionalArgument(..))
+import Error
+import Graphql.Http
+import Graphql.Operation exposing (RootQuery)
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
-import Helper exposing (GraphqlRemoteData, NamedNodeData, Now, PredictionData, UserCandidate, blankPrediction, displayGroupSelect, displayListItems, displayNamedNodeLink, displayNamedNodeList, displayOutcome, displayOutcomeSymbol, displayTime, getShortDateString, validateConfidence, validateDeadline, viewData)
-import Html exposing (Html, a, b, blockquote, button, dd, div, dl, dt, form, h4, hr, input, label, li, option, select, strong, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (checked, disabled, for, href, id, placeholder, selected, step, type_, value)
-import Html.Events exposing (onCheck, onClick, onInput, onSubmit)
-import Html.Keyed as Keyed
-import Html.Lazy exposing (lazy)
-import Http
-import Iso8601
+import Helper exposing (Now, displayOutcomeSymbol, displayTime, getShortDateString)
+import Html exposing (Html, a, button, dd, div, dl, dt, form, hr, input, label, li, p, table, tbody, td, text, th, thead, tr, ul)
+import Html.Attributes exposing (disabled, for, href, id, placeholder, style, type_, value)
+import Html.Events exposing (onClick, onInput, onSubmit)
+import Http exposing (Error(..), Resolver)
 import Json.Decode as D
-import NewCase
-import PredictionList
+import Json.Encode as E
 import Predictions.Enum.Outcome exposing (Outcome(..))
-import Predictions.InputObject exposing (CaseInput, CommentInput, PredictionInput)
-import Predictions.Interface exposing (Event)
-import Predictions.Interface.Event as Event
-import Predictions.Mutation as Mutation
-import Predictions.Object.Case as Case
-import Predictions.Object.Comment as Comment
-import Predictions.Object.CommentActivity
-import Predictions.Object.DeadlineEvent
-import Predictions.Object.Diagnosis as Diagnosis
-import Predictions.Object.Group as Group
-import Predictions.Object.GroupCaseActivity
-import Predictions.Object.Judgement as Judgement
-import Predictions.Object.JudgementActivity
-import Predictions.Object.Score as Score
-import Predictions.Object.User as User
-import Predictions.Object.Wager as Wager
-import Predictions.Object.WagerActivity
-import Predictions.Query as Query
+import Predictions.Object.Group
+import Predictions.Object.Score
+import Predictions.Object.User
+import Predictions.Query
 import Predictions.Scalar exposing (Id(..))
 import RemoteData exposing (RemoteData(..))
 import Round
-import ScalarCodecs exposing (Id, Timestamp)
-import String
+import ScalarCodecs exposing (Timestamp)
 import Svg as S
 import Task
 import Time
 import Url
 import Url.Builder
-import Url.Parser exposing ((</>), (<?>), Parser, map, oneOf, s, string, top)
-import Url.Parser.Query
-
-
-
--- MAIN
+import Url.Parser exposing ((</>), Parser, map, oneOf, s, string, top)
 
 
 main : Program () Model Msg
@@ -74,972 +46,528 @@ main =
         }
 
 
-
--- PORTS
-
-
-port decrypt : { password : String, references : List EncryptedReference } -> Cmd msg
+init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
+init _ url key =
+    parseUrlAndRequest url <| Model key (Now Time.utc <| Time.millisToPosix 0) (LoggedOut Nothing blankCredentials)
 
 
-port decryptReceiver : (List EncryptedReference -> msg) -> Sub msg
-
-
-
--- MODEL
-
-
-type State
-    = WelcomePage
-    | UserDetail (GraphqlRemoteData UserDetailData)
-    | ScoreDetail (List (CI.One Score CI.Dot)) (GraphqlRemoteData (List Score))
-    | PredictionList PredictionList.Params PredictionList.Predictions
-    | CaseList Cases.Params Cases.Cases
-    | EventList (GraphqlRemoteData (List EventResult))
-    | GroupList (GraphqlRemoteData (List NamedNodeData))
-    | GroupDetail (GraphqlRemoteData GroupDetailData)
-    | CaseDetail (GraphqlRemoteData CaseDetailData)
-    | NewCase NewCase.Data
-    | ImportFromPB ImportParams (Maybe Id) (RemoteData (Html Msg) ImportedData)
-    | NoData
+subscriptions : Model -> Sub msg
+subscriptions _ =
+    Sub.none
 
 
 type alias Model =
     { key : Nav.Key
     , now : Now
-    , state : State
     , auth : Auth
-    , allUsers : List UserCandidate
     }
 
 
 type Auth
-    = SignedIn (List NamedNodeData) UserCandidate
-    | SignedOut (List NamedNodeData)
+    = LoggedOut (Maybe (Html Msg)) Credentials
+    | LoggingIn Credentials
+    | LoggedIn UserInfo Data
 
 
-newUserResponseHandler : GraphqlRemoteData Auth -> Msg
-newUserResponseHandler response =
-    UserChanged <|
-        case response of
-            Success auth ->
-                auth
-
-            _ ->
-                SignedOut []
+type alias Credentials =
+    { username : String
+    , password : String
+    }
 
 
-usersResponseHandler : Url.Url -> GraphqlRemoteData (List NamedNodeData) -> Msg
-usersResponseHandler url response =
-    GotAuth url <|
-        SignedOut
-            (case response of
-                Success users ->
-                    users
-
-                _ ->
-                    []
-            )
+blankCredentials : Credentials
+blankCredentials =
+    Credentials "" ""
 
 
-init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
-init _ url key =
-    ( Model key (Now Time.utc <| Time.millisToPosix 0) NoData (SignedOut []) []
-    , Cmd.batch
-        [ Task.perform identity <| Task.map2 NewTime Time.here Time.now
-        , userListQuery |> makeRequest (usersResponseHandler url)
-        ]
-    )
+type alias UserInfo =
+    { node : NamedNodeData
+    , accessToken : String
+    , refreshToken : String
+    }
 
 
+type Data
+    = NoData
+    | Me (HtmlRemoteData MyDetails)
+    | GroupList (HtmlRemoteData GroupListData)
+    | GroupDetail (HtmlRemoteData GroupDetailData)
+    | UserDetail (HtmlRemoteData NamedNodeData)
+    | UserScore (List (CI.One Score CI.Dot)) (HtmlRemoteData (List Score))
 
--- UPDATE
+
+type alias HtmlRemoteData a =
+    RemoteData (Html Msg) a
+
+
+type alias NamedNodeData =
+    { id : Id
+    , name : String
+    }
+
+
+type alias MyDetails =
+    { node : NamedNodeData
+    , created : Timestamp
+    , score : Maybe Float
+    }
+
+
+type alias GroupListData =
+    List NamedNodeData
+
+
+type alias GroupDetailData =
+    { node : NamedNodeData
+    , members : List NamedNodeData
+    }
+
+
+type alias Score =
+    { judged : Timestamp
+    , case_ : NamedNodeData
+    , diagnosis : String
+    , confidence : Int
+    , outcome : Outcome
+    , brierScore : Float
+    , averageBrierScore : Float
+    , adjustedBrierScore : Float
+    }
 
 
 type Msg
-    = NewTime Time.Zone Time.Posix
+    = NewTime Now
     | LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
-    | GotAuth Url.Url Auth
-    | GrabNewUser Id
-    | UserChanged Auth
-    | StateChanged State
-    | UpdateCase NewCase.Data
-    | SubmitCase CaseInput
-    | SubmitComment CaseDetailData Id String
-    | SubmitDeadline CaseDetailData Timestamp
-    | SubmitGroup CaseDetailData (Maybe Id)
-    | SubmitDiagnosis CaseDetailData Id PredictionInput
-    | SubmitWager CaseDetailData Id Id Int
-    | SubmitJudgement CaseDetailData Id Id Outcome
-    | CaseCreated (GraphqlRemoteData Id)
-    | ChangeImportParams ImportParams
-    | ImportData ImportParams
-    | GotImportedDataResult ImportParams (RemoteData (Html Msg) ImportedData)
-    | GotDecrypted (List EncryptedReference)
-    | ImportToDatabase (List CaseInput)
-    | CasesImported (GraphqlRemoteData Int)
-    | FetchPredictions PredictionList.Params
-    | GotPredictions PredictionList.Params PredictionList.Predictions
+    | LoggedInOK UserInfo
+    | DataUpdated Auth
+    | Login Credentials
+    | Logout
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        NewTime zone time ->
-            ( { model | now = Now zone time }
-            , Cmd.none
-            )
+        NewTime now ->
+            ( { model | now = now }, Cmd.none )
 
         LinkClicked urlRequest ->
             case urlRequest of
                 Browser.Internal url ->
-                    if url.path == "/graphql" then
-                        ( model, Nav.load (Url.toString url) )
-
-                    else
-                        ( model, Nav.pushUrl model.key (Url.toString url) )
+                    ( model, Nav.pushUrl model.key (Url.toString url) )
 
                 Browser.External href ->
                     ( model, Nav.load href )
 
         UrlChanged url ->
-            parseUrlAndRequest model url
+            parseUrlAndRequest url model
 
-        GotAuth url auth ->
-            parseUrlAndRequest { model | auth = auth } url
-
-        GrabNewUser id ->
-            ( model
-            , SelectionSet.map2 SignedIn
-                (Query.users <| SelectionSet.map2 NamedNodeData User.id User.name)
-                (Query.user { id = id } <|
-                    SelectionSet.map2 UserCandidate
-                        (SelectionSet.map2 NamedNodeData User.id User.name)
-                        (User.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name)
-                )
-                |> makeRequest newUserResponseHandler
-            )
-
-        UserChanged auth ->
-            ( { model | auth = auth, state = NoData }
-            , Nav.pushUrl model.key "/"
-            )
-
-        StateChanged state ->
-            ( { model | state = state }
-            , Task.perform (NewTime model.now.zone) Time.now
-            )
-
-        UpdateCase caseData ->
-            ( { model | state = NewCase caseData }
+        LoggedInOK user ->
+            ( { model | auth = LoggedIn user NoData }
+              --, Nav.pushUrl model.key <| userUrl user.id
             , Cmd.none
             )
 
-        CaseCreated graphqlRemoteData ->
-            case graphqlRemoteData of
-                Success (Id id) ->
-                    ( model, Nav.pushUrl model.key <| "/case/" ++ id )
+        DataUpdated auth ->
+            ( { model | auth = auth }, Task.map2 Now Time.here Time.now |> Task.perform NewTime )
 
-                _ ->
-                    ( model, Cmd.none )
-
-        SubmitCase caseData ->
-            ( model, submitCase caseData )
-
-        SubmitComment caseDetail creatorId string ->
+        Login credentials ->
             let
-                withNewComment : CommentData -> CaseDetailData
-                withNewComment newComment =
-                    { caseDetail | comments = caseDetail.comments ++ [ newComment ] }
+                userDecoder : D.Decoder UserInfo
+                userDecoder =
+                    D.map3
+                        UserInfo
+                        (D.field "user" <| D.map2 NamedNodeData (D.field "id" <| D.map Id D.string) (D.field "name" D.string))
+                        (D.field "accessToken" D.string)
+                        (D.field "refreshToken" D.string)
+
+                responseToResult : Http.Response String -> Result (Html msg) UserInfo
+                responseToResult response =
+                    case response of
+                        Http.GoodStatus_ _ body ->
+                            case D.decodeString userDecoder body of
+                                Ok value ->
+                                    Ok value
+
+                                _ ->
+                                    Err <| Error.responseToHtml response
+
+                        _ ->
+                            Err <| Error.responseToHtml response
+
+                resultToMsg : Result (Html Msg) UserInfo -> Msg
+                resultToMsg result =
+                    case result of
+                        Ok user ->
+                            LoggedInOK user
+
+                        Err error ->
+                            LoggedOut (Just error) credentials |> DataUpdated
             in
-            ( model
-            , Mutation.addComment
-                { creatorId = creatorId, caseId = caseDetail.node.id, text = string }
-                mapToCommentData
-                |> Graphql.Http.mutationRequest graphQlEndpoint
-                |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewComment caseDetail)
-            )
-
-        SubmitDeadline caseDetail deadline ->
-            let
-                withNewDeadline : Timestamp -> CaseDetailData
-                withNewDeadline newDeadline =
-                    { caseDetail | deadline = newDeadline }
-            in
-            ( model
-            , Mutation.changeDeadline
-                { caseId = caseDetail.node.id, newDeadline = deadline }
-                |> Graphql.Http.mutationRequest graphQlEndpoint
-                |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewDeadline caseDetail)
-            )
-
-        SubmitGroup caseDetail groupId ->
-            let
-                fillInOptionals args =
-                    { args
-                        | newGroupId =
-                            case groupId of
-                                Just id ->
-                                    Present id
-
-                                Nothing ->
-                                    Null
-                    }
-
-                withNewGroup : Maybe NamedNodeData -> CaseDetailData
-                withNewGroup newGroup =
-                    { caseDetail | group = newGroup }
-            in
-            ( model
-            , Mutation.changeGroup fillInOptionals
-                { caseId = caseDetail.node.id }
-                (SelectionSet.map2 NamedNodeData Group.id Group.name)
-                |> Graphql.Http.mutationRequest graphQlEndpoint
-                |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewGroup caseDetail)
-            )
-
-        SubmitDiagnosis caseDetail creatorId predictionInput ->
-            let
-                withNewDiagnosis : DiagnosisDetailData -> CaseDetailData
-                withNewDiagnosis newDiagnosis =
-                    { caseDetail | diagnoses = caseDetail.diagnoses ++ [ newDiagnosis ] }
-            in
-            ( model
-            , Mutation.addDiagnosis
-                { creatorId = creatorId, caseId = caseDetail.node.id, prediction = predictionInput }
-                mapToDiagnosisDetailData
-                |> Graphql.Http.mutationRequest graphQlEndpoint
-                |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewDiagnosis caseDetail)
-            )
-
-        SubmitWager caseDetail creatorId diagnosisId confidence ->
-            let
-                appendWager : WagerData -> DiagnosisDetailData -> DiagnosisDetailData
-                appendWager newWager diagnosis =
-                    if diagnosis.node.id == diagnosisId then
-                        { diagnosis | wagers = diagnosis.wagers ++ [ newWager ] }
-
-                    else
-                        diagnosis
-
-                withNewWager : WagerData -> CaseDetailData
-                withNewWager newWager =
-                    { caseDetail | diagnoses = List.map (appendWager newWager) caseDetail.diagnoses }
-            in
-            ( model
-            , Mutation.addWager
-                { creatorId = creatorId, diagnosisId = diagnosisId, confidence = confidence }
-                mapToWagerData
-                |> Graphql.Http.mutationRequest graphQlEndpoint
-                |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewWager caseDetail)
-            )
-
-        SubmitJudgement caseDetail creatorId diagnosisId outcome ->
-            let
-                addJudgement : JudgementData -> DiagnosisDetailData -> DiagnosisDetailData
-                addJudgement newJudgement diagnosis =
-                    if diagnosis.node.id == diagnosisId then
-                        { diagnosis | judgement = Just newJudgement }
-
-                    else
-                        diagnosis
-
-                withNewJudgement : JudgementData -> CaseDetailData
-                withNewJudgement newJudgement =
-                    { caseDetail | diagnoses = List.map (addJudgement newJudgement) caseDetail.diagnoses }
-            in
-            ( model
-            , Mutation.judgeOutcome
-                { diagnosisId = diagnosisId, judgedById = creatorId, outcome = outcome }
-                mapToJudgementData
-                |> Graphql.Http.mutationRequest graphQlEndpoint
-                |> Graphql.Http.send (RemoteData.fromResult >> updateCase withNewJudgement caseDetail)
-            )
-
-        ChangeImportParams importParams ->
-            ( { model | state = ImportFromPB importParams Nothing NotAsked }
-            , Cmd.none
-            )
-
-        ImportData importParams ->
-            ( { model | state = ImportFromPB importParams Nothing Loading }
-            , Http.get
-                { url =
-                    --Url.Builder.absolute [ "my_predictions" ]
-                    Url.Builder.crossOrigin "https://predictionbook.com"
-                        [ "api", "my_predictions" ]
-                        [ Url.Builder.string "api_token" importParams.apiToken
-                        , Url.Builder.int "page_size" importParams.pageSize
-                        , Url.Builder.int "page" importParams.page
-                        ]
-                , expect = expectJson (RemoteData.fromResult >> GotImportedDataResult importParams) dataDecoder
+            ( { model | auth = LoggingIn credentials }
+            , Http.post
+                { url = Url.Builder.absolute [ "auth", "login" ] []
+                , body = Http.jsonBody <| E.object [ ( "username", E.string credentials.username ), ( "password", E.string credentials.password ) ]
+                , expect = Http.expectStringResponse resultToMsg responseToResult
                 }
             )
 
-        GotImportedDataResult importParams remoteData ->
-            ( { model | state = ImportFromPB importParams Nothing remoteData }
-            , case remoteData of
-                Success data ->
-                    decrypt { password = importParams.password, references = Dict.foldr (\_ case_ cases -> case_.reference :: cases) [] data.predictions.cases }
-
-                _ ->
-                    Cmd.none
-            )
-
-        GotDecrypted decryptedReferences ->
-            ( case model.state of
-                ImportFromPB importParams groupId (Success importedData) ->
-                    let
-                        replace : EncryptedReference -> Maybe ImportedCase -> Maybe ImportedCase
-                        replace decrypted importedCase =
-                            case importedCase of
-                                Just c ->
-                                    Just { c | reference = decrypted }
-
-                                Nothing ->
-                                    Nothing
-
-                        fold : EncryptedReference -> Dict Int ImportedCase -> Dict Int ImportedCase
-                        fold decrypted dict =
-                            Dict.update decrypted.groupId (replace decrypted) dict
-
-                        cases : Dict Int ImportedCase
-                        cases =
-                            List.foldl fold importedData.predictions.cases decryptedReferences
-                    in
-                    { model
-                        | state =
-                            ImportFromPB importParams groupId <|
-                                Success <|
-                                    ImportedData importedData.user <|
-                                        ImportedCases importedData.predictions.count cases
-                    }
-
-                _ ->
-                    model
+        Logout ->
+            ( { model | auth = LoggedOut Nothing blankCredentials }
             , Cmd.none
             )
 
-        ImportToDatabase cases ->
-            ( model
-            , Mutation.importCases
-                { cases = cases }
-                |> Graphql.Http.mutationRequest graphQlEndpoint
-                |> Graphql.Http.send (RemoteData.fromResult >> CasesImported)
+
+type Route
+    = Welcome
+    | UserDetailRoute Id
+    | UserScoreRoute Id
+    | GroupsRoute
+    | GroupDetailRoute Id
+
+
+routeParser : Parser (Route -> a) a
+routeParser =
+    oneOf
+        [ map Welcome top
+        , map GroupsRoute <| s "groups"
+        , map (GroupDetailRoute << Id) <| s "groups" </> string
+        , map (UserDetailRoute << Id) <| s "users" </> string
+        , map (UserScoreRoute << Id) <| s "user" </> string </> s "score"
+        ]
+
+
+parseUrlAndRequest : Url.Url -> Model -> ( Model, Cmd Msg )
+parseUrlAndRequest url model =
+    case ( model.auth, Url.Parser.parse routeParser url ) of
+        ( LoggedIn userData _, Just Welcome ) ->
+            ( { model | auth = LoggedIn userData NoData }, Cmd.none )
+
+        ( _, Just Welcome ) ->
+            ( model, Cmd.none )
+
+        ( LoggedIn userData _, Just (UserDetailRoute userId) ) ->
+            if userId == userData.node.id then
+                ( { model | auth = LoggedIn userData (Me Loading) }
+                , SelectionSet.map3 MyDetails
+                    (SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name)
+                    Predictions.Object.User.created
+                    (Predictions.Object.User.score { adjusted = False })
+                    |> Predictions.Query.user { id = userId }
+                    |> sendRequest Me userData
+                )
+
+            else
+                ( { model | auth = LoggedIn userData (UserDetail Loading) }
+                , SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name
+                    |> Predictions.Query.user { id = userId }
+                    |> sendRequest UserDetail userData
+                )
+
+        ( LoggedIn userData _, Just GroupsRoute ) ->
+            ( { model | auth = LoggedIn userData (GroupList Loading) }
+            , SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name
+                |> Predictions.Object.User.groups
+                |> Predictions.Query.user { id = userData.node.id }
+                |> sendRequest GroupList userData
             )
 
-        CasesImported graphqlRemoteData ->
-            case ( model.auth, graphqlRemoteData ) of
-                ( SignedIn _ user, Success _ ) ->
-                    ( model
-                    , Nav.pushUrl model.key <|
-                        case user.node.id of
-                            Id id ->
-                                "/user/" ++ id
-                    )
+        ( LoggedIn userData _, Just (GroupDetailRoute groupId) ) ->
+            ( { model | auth = LoggedIn userData (GroupDetail Loading) }
+            , SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name
+                |> Predictions.Object.Group.members
+                |> SelectionSet.map2 GroupDetailData (SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name)
+                |> Predictions.Query.group { id = groupId }
+                |> sendRequest GroupDetail userData
+            )
 
-                _ ->
-                    ( model, Cmd.none )
-
-        FetchPredictions params ->
-            ( { model | state = PredictionList params Loading }, PredictionList.fetch GotPredictions params )
-
-        GotPredictions params predictions ->
-            ( { model | state = PredictionList params predictions }, Cmd.none )
-
-
-expectJson : (Result (Html msg) a -> msg) -> D.Decoder a -> Http.Expect msg
-expectJson toMsg decoder =
-    Http.expectStringResponse toMsg <|
-        \response ->
-            case response of
-                Http.BadUrl_ url ->
-                    Err <| text <| "Bad url: " ++ url
-
-                Http.Timeout_ ->
-                    Err <| text "Timeout error"
-
-                Http.NetworkError_ ->
-                    Err <| text "Network error"
-
-                Http.BadStatus_ metadata body ->
-                    let
-                        errorDecoder =
-                            D.map2 ImportError
-                                (D.field "error" D.string)
-                                (D.field "status" D.string)
-                    in
-                    Err <|
-                        case D.decodeString errorDecoder body of
-                            Ok e ->
-                                dl []
-                                    [ dt [] [ text "Error" ]
-                                    , dd [] [ text e.error ]
-                                    , dt [] [ text "Status" ]
-                                    , dd [] [ text e.status ]
-                                    ]
-
-                            Err _ ->
-                                text <| "Error " ++ String.fromInt metadata.statusCode ++ ": " ++ metadata.statusText
-
-                Http.GoodStatus_ _ body ->
-                    case D.decodeString decoder body of
-                        Ok value ->
-                            Ok value
-
-                        Err err ->
-                            Err <| text <| D.errorToString err
-
-
-updateCase : (a -> CaseDetailData) -> CaseDetailData -> GraphqlRemoteData a -> Msg
-updateCase getUpdatedCase oldCase newData =
-    (case newData of
-        Success data ->
-            getUpdatedCase data |> (\c -> { c | state = Viewing })
+        ( LoggedIn userData _, Just (UserScoreRoute userId) ) ->
+            ( { model | auth = LoggedIn userData (UserScore [] Loading) }
+            , SelectionSet.map8 Score
+                Predictions.Object.Score.judged
+                (SelectionSet.map2 NamedNodeData Predictions.Object.Score.caseId Predictions.Object.Score.reference)
+                Predictions.Object.Score.diagnosis
+                Predictions.Object.Score.confidence
+                Predictions.Object.Score.outcome
+                Predictions.Object.Score.brierScore
+                Predictions.Object.Score.averageBrierScore
+                Predictions.Object.Score.adjustedBrierScore
+                |> Predictions.Object.User.scores
+                |> Predictions.Query.user { id = userId }
+                |> sendRequest (UserScore []) userData
+            )
 
         _ ->
-            oldCase
-    )
-        |> Success
-        |> CaseDetail
-        |> StateChanged
+            ( model, Nav.pushUrl model.key "/" )
 
 
-
--- SUBSCRIPTIONS
-
-
-subscriptions : Model -> Sub Msg
-subscriptions _ =
-    decryptReceiver GotDecrypted
+api : String
+api =
+    Url.Builder.absolute [ "api" ] []
 
 
+sendRequest : (HtmlRemoteData a -> Data) -> UserInfo -> SelectionSet a RootQuery -> Cmd Msg
+sendRequest toData originalUser request =
+    let
+        resultToMessage : Result ( UserInfo, Html Msg ) ( UserInfo, a ) -> Msg
+        resultToMessage result =
+            let
+                ( newUser, remoteData ) =
+                    case result of
+                        Ok ( user, data ) ->
+                            ( user, Success data )
 
--- VIEW
+                        Err ( user, errorMsg ) ->
+                            ( user, Failure errorMsg )
+            in
+            remoteData |> toData |> LoggedIn newUser |> DataUpdated
+    in
+    requestToTask request originalUser
+        |> Task.onError (refreshTokenAndTryAgain request)
+        |> Task.attempt resultToMessage
+
+
+requestToTask : SelectionSet a RootQuery -> UserInfo -> Task.Task ( UserInfo, Graphql.Http.Error a ) ( UserInfo, a )
+requestToTask request user =
+    request
+        |> Graphql.Http.queryRequest api
+        |> Graphql.Http.withHeader "Authorization" ("Bearer " ++ user.accessToken)
+        |> Graphql.Http.toTask
+        |> Task.map (Tuple.pair user)
+        |> Task.mapError (Tuple.pair user)
+
+
+refreshTokenAndTryAgain : SelectionSet a RootQuery -> ( UserInfo, Graphql.Http.Error a ) -> Task.Task ( UserInfo, Html Msg ) ( UserInfo, a )
+refreshTokenAndTryAgain request ( originalUser, originalError ) =
+    let
+        onRefresh : Http.Response String -> Result (Html Msg) UserInfo
+        onRefresh response =
+            case response of
+                Http.GoodStatus_ _ body ->
+                    D.decodeString
+                        (D.map2
+                            (UserInfo originalUser.node)
+                            (D.field "accessToken" D.string)
+                            (D.field "refreshToken" D.string)
+                        )
+                        body
+                        |> Result.mapError (D.errorToString >> text)
+
+                _ ->
+                    Err <| Error.responseToHtml response
+
+        fail : Task.Task ( UserInfo, Html Msg ) ( UserInfo, a )
+        fail =
+            Task.fail ( originalUser, Error.graphqlHttpErrorToHtml originalError )
+    in
+    case originalError of
+        Graphql.Http.HttpError (Graphql.Http.BadStatus _ apiBody) ->
+            case D.decodeString (D.field "error" D.string) apiBody of
+                Ok "jwt expired" ->
+                    Http.task
+                        { method = "POST"
+                        , headers = []
+                        , url = Url.Builder.absolute [ "auth", "refresh" ] []
+                        , body = Http.jsonBody <| E.object [ ( "token", E.string originalUser.refreshToken ) ]
+                        , resolver = Http.stringResolver onRefresh
+                        , timeout = Nothing
+                        }
+                        |> Task.mapError (Tuple.pair originalUser)
+                        |> Task.andThen (requestToTask request >> Task.mapError (Tuple.mapSecond Error.graphqlHttpErrorToHtml))
+
+                _ ->
+                    fail
+
+        _ ->
+            fail
 
 
 view : Model -> Document Msg
 view model =
     { title = "Predictions"
-    , body =
-        [ displayAuth model.auth
-        , ul [] <|
-            [ li [] [ a [ href <| Url.Builder.absolute [] [] ] [ text "Home" ] ]
-            , li [] [ a [ href <| Url.Builder.absolute [ "graphql" ] [] ] [ text "GraphiQL" ] ]
-            ]
-                ++ (case model.auth of
-                        SignedIn _ userCandidate ->
-                            case userCandidate.node.id of
-                                Id userId ->
-                                    [ li [] [ a [ href <| Url.Builder.absolute [ "user", userId ] [] ] [ text "My user page" ] ]
-                                    , li [] [ a [ href <| Url.Builder.absolute [ "cases" ] [] ] [ text "Cases" ] ]
-                                    , li [] [ a [ href <| Url.Builder.absolute [ "user", userId, "predictions" ] [] ] [ text "Predictions" ] ]
-                                    , li [] [ a [ href <| Url.Builder.absolute [ "user", userId, "events" ] [] ] [ text "Events" ] ]
-                                    , li [] [ a [ href <| Url.Builder.absolute [ "new" ] [] ] [ text "New prediction" ] ]
-                                    , li [] [ a [ href <| Url.Builder.absolute [ "import" ] [] ] [ text "Import" ] ]
-                                    ]
-
-                        SignedOut _ ->
-                            []
-                   )
-        , hr [] []
-        , displayData model
-        ]
+    , body = viewModel model
     }
 
 
-determineNewAuth : Auth -> String -> Msg
-determineNewAuth auth id =
+viewModel : Model -> List (Html Msg)
+viewModel model =
     let
-        users =
-            case auth of
-                SignedIn a _ ->
-                    a
+        changeUsername credentials newUsername =
+            { credentials | username = newUsername }
 
-                SignedOut a ->
-                    a
+        changePassword credentials newPassword =
+            { credentials | password = newPassword }
+
+        displaySignInForm updateCredentials disableInputs credentials =
+            form [ onSubmit <| Login credentials ]
+                [ div []
+                    [ label [ for "username" ] [ text "Username: " ]
+                    , input [ id "username", placeholder "Username", type_ "text", value credentials.username, onInput (changeUsername credentials >> updateCredentials), disabled disableInputs ] []
+                    ]
+                , div []
+                    [ label [ for "password" ] [ text "Password: " ]
+                    , input [ id "password", placeholder "Password", type_ "password", value credentials.password, onInput (changePassword credentials >> updateCredentials), disabled disableInputs ] []
+                    ]
+                , button [ type_ "submit", disabled disableInputs ] [ text "Sign in" ]
+                ]
     in
-    case List.filter (\user -> user.id == Id id) users of
-        [ newUser ] ->
-            GrabNewUser newUser.id
-
-        _ ->
-            UserChanged <| SignedOut users
-
-
-displayAuth : Auth -> Html Msg
-displayAuth auth =
-    let
-        ( allUsers, isLoggedInUser, loggedOut ) =
-            case auth of
-                SignedIn users currentUser ->
-                    ( users, \userId -> currentUser.node.id == userId, False )
-
-                SignedOut users ->
-                    ( users, always False, True )
-
-        mapToOption : NamedNodeData -> Html msg
-        mapToOption user =
-            case user.id of
-                Id id ->
-                    option [ value id, selected <| isLoggedInUser user.id ] [ text user.name ]
-    in
-    div []
-        [ label [] [ text "Select current user: " ]
-        , select [ onInput <| determineNewAuth auth ] <|
-            option [ value "", selected loggedOut ] [ text "<No user>" ]
-                :: List.map mapToOption allUsers
-        ]
-
-
-displayData : Model -> Html Msg
-displayData model =
     case model.auth of
-        SignedIn _ user ->
-            case model.state of
-                WelcomePage ->
-                    text <| "Welcome, " ++ user.node.name
-
-                NoData ->
-                    text "No data!"
-
-                UserDetail graphqlRemoteData ->
-                    viewData (displayUser model.now) graphqlRemoteData
-
-                ScoreDetail hovering graphqlRemoteData ->
-                    viewData (displayScores model.now hovering) graphqlRemoteData
-
-                EventList graphqlRemoteData ->
-                    viewData (displayEvents model.now) graphqlRemoteData
-
-                GroupList graphqlRemoteData ->
-                    viewData (displayNamedNodeList [ "group" ]) graphqlRemoteData
-
-                CaseList tag graphqlRemoteData ->
-                    viewData (displayCaseList tag) graphqlRemoteData
-
-                GroupDetail graphqlRemoteData ->
-                    viewData displayGroup graphqlRemoteData
-
-                CaseDetail graphqlRemoteData ->
-                    viewData (displayCase model.now user) graphqlRemoteData
-
-                NewCase caseData ->
-                    NewCase.displayNewForm UpdateCase SubmitCase user caseData
-
-                ImportFromPB importParams groupId importedData ->
-                    displayImport model.now user importParams groupId importedData
-
-                PredictionList params predictions ->
-                    PredictionList.display model.now GotPredictions FetchPredictions params predictions
-
-        SignedOut _ ->
-            text "Please sign in to begin"
-
-
-type alias ImportParams =
-    { apiToken : String
-    , pageSize : Int
-    , page : Int
-    , password : String
-    }
-
-
-type alias ImportError =
-    { error : String
-    , status : String
-    }
-
-
-type alias ImportedUser =
-    { name : String
-    , email : String
-    , userId : Int
-    }
-
-
-type alias ImportedData =
-    { user : ImportedUser
-    , predictions : ImportedCases
-    }
-
-
-type alias EncryptedReference =
-    { groupId : Int
-    , ciphertext : String
-    , cleartext : Maybe String
-    }
-
-
-type alias ImportedCases =
-    { count : Int
-    , cases : Dict Int ImportedCase
-    }
-
-
-type alias ImportedDiagnosis =
-    { diagnosis : String
-    , confidence : Int
-    , outcome : Maybe Outcome
-    }
-
-
-type alias ImportedCase =
-    { reference : EncryptedReference
-    , created : Timestamp
-    , deadline : Timestamp
-    , diagnoses : List ImportedDiagnosis
-    , comments : List ImportedComment
-    , selected : Bool
-    }
-
-
-createImportedCases : List ImportedPrediction -> ImportedCases
-createImportedCases importedPredictions =
-    let
-        getReference : ImportedPrediction -> ImportedPredictionGroupData -> EncryptedReference
-        getReference { diagnosis } group =
-            EncryptedReference group.groupId (String.slice 1 -(2 + String.length diagnosis) group.descriptionWithGroup) Nothing
-
-        predictionToDiagnosis : ImportedPrediction -> ImportedDiagnosis
-        predictionToDiagnosis prediction =
-            let
-                foldConfidence : ImportedResponse -> Int -> Int
-                foldConfidence response confidence =
-                    case response.confidence of
-                        Just c ->
-                            c
+        LoggedOut error credentials ->
+            displaySignInForm (LoggedOut error >> DataUpdated) False credentials
+                :: (case error of
+                        Just e ->
+                            [ e ]
 
                         Nothing ->
-                            confidence
-            in
-            ImportedDiagnosis prediction.diagnosis (List.foldr foldConfidence prediction.meanConfidence prediction.responses) prediction.outcome
-
-        predictionToComments : ImportedPrediction -> List ImportedComment
-        predictionToComments prediction =
-            let
-                filter : ImportedResponse -> Maybe ImportedComment
-                filter response =
-                    Maybe.map (ImportedComment response.timestamp) response.comment
-            in
-            List.filterMap filter prediction.responses
-
-        upsert : ImportedPrediction -> Dict Int ImportedCase -> Dict Int ImportedCase
-        upsert prediction dict =
-            case prediction.predictionGroup of
-                Nothing ->
-                    dict
-
-                Just group ->
-                    let
-                        groupList =
-                            Maybe.withDefault (ImportedCase (getReference prediction group) prediction.created prediction.deadline [] [] True) <| Dict.get group.groupId dict
-                    in
-                    Dict.insert group.groupId
-                        { groupList
-                            | diagnoses = predictionToDiagnosis prediction :: groupList.diagnoses
-                            , comments = predictionToComments prediction ++ groupList.comments
-                        }
-                        dict
-    in
-    ImportedCases (List.length importedPredictions) <| List.foldl upsert Dict.empty importedPredictions
-
-
-type alias ImportedPredictionGroupData =
-    { groupId : Int
-    , descriptionWithGroup : String
-    }
-
-
-type alias ImportedResponse =
-    { timestamp : Timestamp
-    , comment : Maybe String
-    , confidence : Maybe Int
-    , userId : Int
-    }
-
-
-type alias ImportedComment =
-    { timestamp : Timestamp
-    , text : String
-    }
-
-
-type alias ImportedPrediction =
-    { created : Timestamp
-    , predictionGroup : Maybe ImportedPredictionGroupData
-    , diagnosis : String
-    , meanConfidence : Int
-    , deadline : Timestamp
-    , outcome : Maybe Outcome
-    , responses : List ImportedResponse
-    }
-
-
-userDecoder : D.Decoder ImportedUser
-userDecoder =
-    D.map3 ImportedUser
-        (D.at [ "user", "name" ] D.string)
-        (D.at [ "user", "email" ] D.string)
-        (D.at [ "user", "user_id" ] D.int)
-
-
-predictionsDecoder : ImportedUser -> D.Decoder ImportedData
-predictionsDecoder user =
-    D.map (ImportedData user) <| D.map createImportedCases <| D.field "predictions" <| D.list (predictionDecoder user)
-
-
-dataDecoder : D.Decoder ImportedData
-dataDecoder =
-    userDecoder |> D.andThen predictionsDecoder
-
-
-responseListDecoder : ImportedUser -> D.Decoder (List ImportedResponse)
-responseListDecoder user =
-    let
-        responseDecoder =
-            D.map4 ImportedResponse
-                (D.field "created_at" Iso8601.decoder)
-                (D.field "comment" <| D.nullable D.string)
-                (D.field "confidence" <| D.nullable D.int)
-                (D.field "user_id" D.int)
-
-        keep : ImportedResponse -> Bool
-        keep response =
-            response.userId == user.userId
-    in
-    D.map (List.reverse << List.filter keep) (D.list responseDecoder)
-
-
-predictionDecoder : ImportedUser -> D.Decoder ImportedPrediction
-predictionDecoder user =
-    let
-        mapBoolToOutcome : Bool -> Outcome
-        mapBoolToOutcome bool =
-            if bool then
-                Right
-
-            else
-                Wrong
-    in
-    D.map7 ImportedPrediction
-        (D.field "created_at" Iso8601.decoder)
-        (D.maybe <| D.map2 ImportedPredictionGroupData (D.field "prediction_group_id" D.int) (D.field "description_with_group" D.string))
-        (D.field "description" D.string)
-        (D.field "mean_confidence" D.int)
-        (D.field "deadline" Iso8601.decoder)
-        (D.field "outcome" <| D.nullable (D.map mapBoolToOutcome D.bool))
-        (D.field "responses" <| responseListDecoder user)
-
-
-validateId : List NamedNodeData -> Id -> Maybe Id
-validateId groups newGroupId =
-    case groups of
-        [] ->
-            Nothing
-
-        x :: xs ->
-            if x.id == newGroupId then
-                Just x.id
-
-            else
-                validateId xs newGroupId
-
-
-displayImportedData : Now -> UserCandidate -> ImportParams -> Maybe Id -> ImportedData -> Html Msg
-displayImportedData now user importParams groupId importedData =
-    let
-        selectedCases : List ImportedCase
-        selectedCases =
-            let
-                acc : a -> ImportedCase -> List ImportedCase -> List ImportedCase
-                acc _ case_ list =
-                    if case_.selected then
-                        case_ :: list
-
-                    else
-                        list
-            in
-            Dict.foldr acc [] importedData.predictions.cases
-
-        updateFn : Bool -> ImportedCase -> ImportedCase
-        updateFn selected case_ =
-            { case_ | selected = selected }
-
-        checkListener : Int -> Bool -> Msg
-        checkListener groupInt selected =
-            GotImportedDataResult importParams <|
-                Success { importedData | predictions = ImportedCases importedData.predictions.count <| Dict.update groupInt (Maybe.map <| updateFn selected) importedData.predictions.cases }
-
-        fold : Int -> ImportedCase -> List CaseInput -> List CaseInput
-        fold _ case_ list =
-            if case_.selected then
-                CaseInput
-                    (Maybe.withDefault case_.reference.ciphertext case_.reference.cleartext)
-                    (Present case_.created)
-                    user.node.id
-                    (OptionalArgument.fromMaybe groupId)
-                    case_.deadline
-                    (case_.diagnoses |> List.map (\dx -> PredictionInput dx.diagnosis dx.confidence (OptionalArgument.fromMaybe dx.outcome)))
-                    (case_.comments |> List.map (\comment -> CommentInput comment.text (Present comment.timestamp)))
-                    :: list
-
-            else
-                list
-    in
-    dl []
-        [ dt [] [ text "API token" ]
-        , dd [] [ text importParams.apiToken ]
-        , dt [] [ text "Page" ]
-        , dd [] <|
-            (if importParams.page > 1 then
-                [ button [ type_ "button", onClick <| ImportData { importParams | page = importParams.page - 1 } ] [ text "<" ] ]
-
-             else
-                []
-            )
-                ++ [ text <| String.fromInt importParams.page ]
-                ++ (if importParams.pageSize == importedData.predictions.count then
-                        [ button [ type_ "button", onClick <| ImportData { importParams | page = importParams.page + 1 } ] [ text ">" ] ]
-
-                    else
-                        []
+                            []
                    )
-        , dt [] [ text "name" ]
-        , dd [] [ text importedData.user.name ]
-        , dt [] [ text "email" ]
-        , dd [] [ text importedData.user.email ]
-        , dt [] [ text "user_id" ]
-        , dd [] [ text <| String.fromInt importedData.user.userId ]
-        , dt [] [ text "predictions" ]
-        , dd []
-            [ text <| (String.fromInt <| List.length selectedCases) ++ " selected: "
-            , div []
-                [ displayGroupSelect groupId user.groups (\id -> StateChanged <| ImportFromPB importParams id <| Success importedData)
-                , button [ type_ "button", onClick <| ImportToDatabase <| Dict.foldr fold [] importedData.predictions.cases ] [ text "Import" ]
+
+        LoggingIn credentials ->
+            [ displaySignInForm (LoggedOut Nothing >> DataUpdated) True credentials ]
+
+        LoggedIn userInfo data ->
+            [ div [] [ text "Welcome, ", displayNamedNode userUrl userInfo.node ]
+            , div [] [ button [ type_ "button", onClick Logout ] [ text "Log out" ] ]
+            , hr [] []
+            , ul []
+                [ li [] [ a [ href <| Url.Builder.absolute [ "groups" ] [] ] [ text "Groups" ] ]
                 ]
-            , Keyed.node "ul" [] <| List.map (\( groupInt, case_ ) -> ( String.fromInt groupInt, lazy (displayImportedCase now <| checkListener groupInt) case_ )) <| Dict.toList importedData.predictions.cases
+            , hr [] []
+            , displayData model.now userInfo data
             ]
-        ]
 
 
-displayImportedCase : Now -> (Bool -> Msg) -> ImportedCase -> Html Msg
-displayImportedCase now checkListener case_ =
-    li []
-        [ dl []
-            [ dt [] [ text "Import" ]
-            , dd [] [ input [ type_ "checkbox", checked case_.selected, onCheck checkListener ] [] ]
-            , dt [] [ text "Reference" ]
-            , dd [] [ text <| Maybe.withDefault case_.reference.ciphertext case_.reference.cleartext ]
-            , dt [] [ text "Created" ]
-            , dd [] [ displayTime now case_.created ]
-            , dt [] [ text "Deadline" ]
-            , dd [] [ displayTime now case_.deadline ]
-            , dt [] [ text "Diagnoses" ]
-            , dd [] [ ul [] <| List.map (displayImportedDiagnosis >> List.singleton >> li []) case_.diagnoses ]
-            , dt [] [ text "Comments" ]
-            , dd [] [ ul [] <| List.map (displayImportedComment now >> List.singleton >> li []) case_.comments ]
-            ]
-        ]
-
-
-displayImportedComment : Now -> ImportedComment -> Html Msg
-displayImportedComment now importedComment =
-    dl []
-        [ dt [] [ displayTime now importedComment.timestamp ]
-        , dd [] [ text importedComment.text ]
-        ]
-
-
-displayImportedDiagnosis : ImportedDiagnosis -> Html Msg
-displayImportedDiagnosis importedDiagnosis =
-    dl []
-        [ dt [] [ text "Diagnosis" ]
-        , dd [] [ text importedDiagnosis.diagnosis ]
-        , dt [] [ text "Confidence" ]
-        , dd [] [ text <| String.fromInt importedDiagnosis.confidence ++ "%" ]
-        , dt [] [ text "Outcome" ]
-        , dd [] [ text <| Maybe.withDefault "Pending" <| Maybe.map displayOutcome importedDiagnosis.outcome ]
-        ]
-
-
-displayImport : Now -> UserCandidate -> ImportParams -> Maybe Id -> RemoteData (Html Msg) ImportedData -> Html Msg
-displayImport now user importParams groupId remoteData =
+displayData : Now -> UserInfo -> Data -> Html Msg
+displayData now userInfo remoteData =
     case remoteData of
-        Success importedData ->
-            displayImportedData now user importParams groupId importedData
+        NoData ->
+            p [] [ text "Click on a link to begin" ]
 
+        Me data ->
+            displayRemoteData (displayMyDetails now) data
+
+        GroupList data ->
+            displayRemoteData displayGroupList data
+
+        GroupDetail data ->
+            displayRemoteData displayGroupDetail data
+
+        UserDetail data ->
+            displayRemoteData displayUserDetail data
+
+        UserScore hovering data ->
+            displayRemoteData (displayUserScore now userInfo hovering) data
+
+
+displayRemoteData : (a -> Html Msg) -> HtmlRemoteData a -> Html Msg
+displayRemoteData displayFunction remoteData =
+    case remoteData of
         NotAsked ->
-            let
-                changeApiToken apiToken =
-                    ChangeImportParams { importParams | apiToken = apiToken }
-
-                changePageSize pageSize =
-                    ChangeImportParams { importParams | pageSize = Maybe.withDefault 1000 <| String.toInt pageSize }
-
-                changePage page =
-                    ChangeImportParams { importParams | page = Maybe.withDefault 1 <| String.toInt page }
-
-                changePassword password =
-                    ChangeImportParams { importParams | password = password }
-            in
-            form [ onSubmit <| ImportData importParams ]
-                [ label [ for "api_token" ] [ text "API token: " ]
-                , input [ id "api_token", value importParams.apiToken, onInput changeApiToken ] []
-                , label [ for "password" ] [ text "Decryption password: " ]
-                , input [ id "password", type_ "password", value importParams.password, onInput changePassword ] []
-                , label [ for "page_size" ] [ text "Page size: " ]
-                , input [ id "page_size", type_ "number", Html.Attributes.min "1", Html.Attributes.max "1000", step "1", value <| String.fromInt importParams.pageSize, onInput changePageSize ] []
-                , label [ for "page" ] [ text "Page: " ]
-                , input [ id "page", type_ "number", Html.Attributes.min "1", step "1", value <| String.fromInt importParams.page, onInput changePage ] []
-                , button [ type_ "submit" ] [ text "Import!" ]
-                ]
+            text "Not asked"
 
         Loading ->
             text "Loading..."
 
-        Failure html ->
-            html
+        Failure htmlMsg ->
+            htmlMsg
+
+        Success data ->
+            displayFunction data
 
 
-displayUser : Now -> UserDetailData -> Html msg
-displayUser now user =
+displayMyDetails : Now -> MyDetails -> Html Msg
+displayMyDetails now myDetails =
     dl []
-        [ dt [] [ text "Name" ]
-        , dd [] [ displayNamedNodeLink [ "user" ] user.node ]
+        [ dt [] [ text "Me" ]
+        , dd [] [ displayNamedNode userUrl myDetails.node ]
         , dt [] [ text "Created" ]
-        , dd [] [ displayTime now user.created ]
+        , dd [] [ displayTime now myDetails.created ]
         , dt [] [ text "Score" ]
         , dd []
-            [ case user.score of
+            [ case myDetails.score of
                 Just score ->
-                    case user.node.id of
-                        Id id ->
-                            a [ href <| Url.Builder.absolute [ "user", id, "score" ] [] ] [ text <| Round.round 4 score ]
+                    a
+                        [ href <|
+                            Url.Builder.absolute
+                                [ "user"
+                                , case myDetails.node.id of
+                                    Id id ->
+                                        id
+                                , "score"
+                                ]
+                                []
+                        ]
+                        [ text <| Round.round 4 score ]
 
                 Nothing ->
                     text "No predictions judged yet"
             ]
-        , dt [] [ text <| "Groups (" ++ String.fromInt (List.length user.groups) ++ ")" ]
-        , dd [] [ displayNamedNodeList [ "group" ] user.groups ]
-        , dt [] [ text <| "Cases created (" ++ String.fromInt (List.length user.casesCreated) ++ ")" ]
-        , dd [] [ displayNamedNodeList [ "case" ] user.casesCreated ]
-        , dt [] [ text <| "Tags (" ++ String.fromInt (List.length user.tags) ++ ")" ]
-        , dd [] [ ul [] <| List.map (\tag -> li [] [ a [ href <| Url.Builder.absolute [ "cases" ] <| [ Url.Builder.string "tag" tag ] ] [ text tag ] ]) user.tags ]
         ]
 
 
-displayScore : Now -> Score -> List (Html msg)
+displayGroupList : GroupListData -> Html Msg
+displayGroupList groups =
+    dl []
+        [ dt [] [ text <| "Groups: " ++ (String.fromInt <| List.length groups) ]
+        , dd [] [ ul [] <| List.map (displayNamedNode groupUrl >> List.singleton >> li []) groups ]
+        ]
+
+
+displayGroupDetail : GroupDetailData -> Html msg
+displayGroupDetail group =
+    dl []
+        [ dt [] [ text "Group" ]
+        , dd [] [ displayNamedNode groupUrl group.node ]
+        , dt [] [ text <| "Members: " ++ (String.fromInt <| List.length group.members) ]
+        , dd [] [ ul [] <| List.map (displayNamedNode userUrl >> List.singleton >> li []) group.members ]
+        ]
+
+
+displayUserDetail : NamedNodeData -> Html msg
+displayUserDetail user =
+    displayNamedNode userUrl user
+
+
+displayUserScore : Now -> UserInfo -> List (CI.One Score CI.Dot) -> List Score -> Html Msg
+displayUserScore now userInfo hovering scores =
+    let
+        onHover : List (CI.One Score CI.Dot) -> Msg
+        onHover newHovering =
+            Success scores |> UserScore newHovering >> LoggedIn userInfo >> DataUpdated
+    in
+    div []
+        [ div [ style "width" "500px" ] [ displayChart now.zone onHover hovering scores ]
+        , div [ style "width" "500px" ] [ displayConfidenceHistogram scores ]
+        , table []
+            [ thead []
+                [ tr []
+                    [ th [] [ text "Judged" ]
+                    , th [] [ text "Case" ]
+                    , th [] [ text "Diagnosis" ]
+                    , th [] [ text "Confidence" ]
+                    , th [] [ text "Outcome" ]
+                    , th [] [ text "Brier score" ]
+                    , th [] [ text "Running average Brier score" ]
+                    , th [] [ text "Running adjusted Brier score" ]
+                    ]
+                ]
+            , tbody [] <| List.map (displayScore now) scores
+            ]
+        ]
+
+
+displayScore : Now -> Score -> Html msg
 displayScore now score =
-    [ td [] [ displayTime now score.judged ]
-    , td [] [ displayNamedNodeLink [ "case" ] score.case_ ]
-    , td [] [ text score.diagnosis ]
-    , td [] [ text <| String.fromInt score.confidence ++ "%" ]
-    , td [] [ text <| displayOutcomeSymbol score.outcome ]
-    , td [] [ text <| Round.round 4 score.brierScore ]
-    , td [] [ text <| Round.round 4 score.averageBrierScore ]
-    , td [] [ text <| Round.round 4 score.adjustedBrierScore ]
-    ]
+    tr []
+        [ td [] [ displayTime now score.judged ]
+        , td [] [ displayNamedNode caseUrl score.case_ ]
+        , td [] [ text score.diagnosis ]
+        , td [] [ text <| String.fromInt score.confidence ++ "%" ]
+        , td [] [ text <| displayOutcomeSymbol score.outcome ]
+        , td [] [ text <| Round.round 4 score.brierScore ]
+        , td [] [ text <| Round.round 4 score.averageBrierScore ]
+        , td [] [ text <| Round.round 4 score.adjustedBrierScore ]
+        ]
 
 
 displayChart : Time.Zone -> (List (CI.One Score CI.Dot) -> Msg) -> List (CI.One Score CI.Dot) -> List Score -> Html Msg
@@ -1160,748 +688,21 @@ displayConfidenceHistogram scores =
         ]
 
 
-displayScores : Now -> List (CI.One Score CI.Dot) -> List Score -> Html Msg
-displayScores now hovering scores =
-    let
-        onHover : List (CI.One Score CI.Dot) -> Msg
-        onHover newHovering =
-            StateChanged <| ScoreDetail newHovering <| Success scores
-    in
-    div []
-        [ div [ Html.Attributes.style "width" "500px" ] [ displayChart now.zone onHover hovering scores ]
-        , div [ Html.Attributes.style "width" "500px" ] [ displayConfidenceHistogram scores ]
-        , table []
-            [ thead []
-                [ tr []
-                    [ th [] [ text "Judged" ]
-                    , th [] [ text "Case" ]
-                    , th [] [ text "Diagnosis" ]
-                    , th [] [ text "Confidence" ]
-                    , th [] [ text "Outcome" ]
-                    , th [] [ text "Brier score" ]
-                    , th [] [ text "Running average Brier score" ]
-                    , th [] [ text "Running adjusted Brier score" ]
-                    ]
-                ]
-            , tbody [] <| List.map (displayScore now >> tr []) scores
-            ]
-        ]
+displayNamedNode : (Id -> String) -> NamedNodeData -> Html msg
+displayNamedNode toUrl node =
+    a [ node.id |> toUrl |> href ] [ text node.name ]
 
 
-displayEvent : Now -> EventResult -> Html msg
-displayEvent now event =
-    li []
-        (case event of
-            WagerActivity activityData diagnosis confidence ->
-                [ displayTime now activityData.event.timestamp
-                , text ": "
-                , displayNamedNodeLink [ "user" ] activityData.user
-                , text <| " added a wager on "
-                , displayNamedNodeLink [ "case" ] activityData.event.case_
-                , text <| ": " ++ diagnosis ++ " (" ++ String.fromInt confidence ++ "%)"
-                ]
+userUrl : Id -> String
+userUrl (Id id) =
+    Url.Builder.absolute [ "users", id ] []
 
-            JudgementActivity activityData diagnosis outcome ->
-                [ displayTime now activityData.event.timestamp
-                , text ": "
-                , displayNamedNodeLink [ "user" ] activityData.user
-                , text <| " judged '" ++ diagnosis ++ "' as " ++ displayOutcome outcome ++ " on case: "
-                , displayNamedNodeLink [ "case" ] activityData.event.case_
-                ]
 
-            CommentActivity activityData comment ->
-                [ displayTime now activityData.event.timestamp
-                , text ": "
-                , displayNamedNodeLink [ "user" ] activityData.user
-                , text " commented on "
-                , displayNamedNodeLink [ "case" ] activityData.event.case_
-                , text <| ": '" ++ comment ++ "'"
-                ]
+groupUrl : Id -> String
+groupUrl (Id id) =
+    Url.Builder.absolute [ "groups", id ] []
 
-            GroupCaseActivity activityData group ->
-                [ displayTime now activityData.event.timestamp
-                , text ": "
-                , displayNamedNodeLink [ "user" ] activityData.user
-                , text " added a case in group "
-                , displayNamedNodeLink [ "group" ] group
-                , text ": "
-                , displayNamedNodeLink [ "case" ] activityData.event.case_
-                ]
 
-            DeadlineEvent eventData ->
-                [ displayTime now eventData.timestamp
-                , text ": Deadline reached for "
-                , displayNamedNodeLink [ "case" ] eventData.case_
-                , text "!"
-                ]
-        )
-
-
-displayEvents : Now -> List EventResult -> Html msg
-displayEvents now events =
-    ul [] <| List.map (displayEvent now) events
-
-
-displayGroup : GroupDetailData -> Html msg
-displayGroup group =
-    dl []
-        [ dt [] [ text "Name" ]
-        , dd [] [ displayNamedNodeLink [ "group" ] group.node ]
-        , dt [] [ text <| "Members (" ++ String.fromInt (List.length group.members) ++ ")" ]
-        , dd [] [ displayNamedNodeList [ "user" ] group.members ]
-        , dt [] [ text <| "Cases (" ++ String.fromInt (List.length group.cases) ++ ")" ]
-        , dd [] [ displayNamedNodeList [ "case" ] group.cases ]
-        ]
-
-
-cancelEditButton : CaseDetailData -> Html Msg
-cancelEditButton caseDetail =
-    button [ type_ "button", onClick <| changeCase { caseDetail | state = Viewing } ] [ text "Cancel" ]
-
-
-displayCaseGroup : UserCandidate -> CaseDetailData -> List (Html Msg)
-displayCaseGroup user caseDetail =
-    let
-        ( viewGroup, groupId ) =
-            case caseDetail.group of
-                Just g ->
-                    ( [ displayNamedNodeLink [ "group" ] g ], Just g.id )
-
-                Nothing ->
-                    ( [ text "None" ], Nothing )
-    in
-    if user.node.id == caseDetail.creator.id then
-        case caseDetail.state of
-            ChangingGroup groups ->
-                [ div [] [ displayGroupSelect groupId groups <| SubmitGroup caseDetail ]
-                , div [] [ cancelEditButton caseDetail ]
-                ]
-
-            Viewing ->
-                [ div [] viewGroup
-                , div [] [ button [ onClick <| changeCase { caseDetail | state = ChangingGroup user.groups } ] [ text "Change" ] ]
-                ]
-
-            _ ->
-                viewGroup
-
-    else
-        viewGroup
-
-
-displayDeadline : Now -> UserCandidate -> CaseDetailData -> List (Html Msg)
-displayDeadline now user caseDetail =
-    let
-        viewDeadline =
-            [ displayTime now caseDetail.deadline ]
-    in
-    if user.node.id == caseDetail.creator.id then
-        case caseDetail.state of
-            ChangingDeadline newDeadline ->
-                let
-                    changeDeadline : Field Timestamp -> Msg
-                    changeDeadline deadline =
-                        changeCase { caseDetail | state = ChangingDeadline deadline }
-
-                    ( submitButtonDisabled, formAttributes ) =
-                        case FormField.getValue newDeadline of
-                            Ok deadline ->
-                                ( False, [ onSubmit <| SubmitDeadline caseDetail deadline ] )
-
-                            Err _ ->
-                                ( True, [] )
-                in
-                [ form formAttributes
-                    [ input [ type_ "datetime-local", FormField.withValue newDeadline, FormField.onInput changeDeadline newDeadline ] []
-                    , div []
-                        [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
-                        , cancelEditButton caseDetail
-                        ]
-                    ]
-                ]
-
-            Viewing ->
-                [ div [] viewDeadline
-                , div [] [ button [ onClick <| changeCase { caseDetail | state = ChangingDeadline <| FormField.newField validateDeadline } ] [ text "Change" ] ]
-                ]
-
-            _ ->
-                viewDeadline
-
-    else
-        viewDeadline
-
-
-displayCase : Now -> UserCandidate -> CaseDetailData -> Html Msg
-displayCase now user caseDetail =
-    dl []
-        [ dt [] [ text "Reference" ]
-        , dd [] [ displayNamedNodeLink [ "case" ] caseDetail.node ]
-        , dt [] [ text "Deadline" ]
-        , dd [] <| displayDeadline now user caseDetail
-        , dt [] [ text "Creator" ]
-        , dd [] [ displayNamedNodeLink [ "user" ] caseDetail.creator ]
-        , dt [] [ text "Group" ]
-        , dd [] <| displayCaseGroup user caseDetail
-        , dt [] [ text <| "Diagnoses (" ++ String.fromInt (List.length caseDetail.diagnoses) ++ ")" ]
-        , dd [] [ ul [] <| displayListItems (displayDiagnosis now user caseDetail) caseDetail.diagnoses ++ displayNewDiagnosis user caseDetail ]
-        , dt [] [ text <| "Comments (" ++ String.fromInt (List.length caseDetail.comments) ++ ")" ]
-        , dd []
-            [ ul [] <|
-                displayListItems (displayComment now) caseDetail.comments
-                    ++ displayNewComment user caseDetail
-            ]
-        , dt [] [ text <| "Tags (" ++ String.fromInt (List.length caseDetail.tags) ++ ")" ]
-        , dd [] [ ul [] <| List.map (text >> List.singleton >> li []) caseDetail.tags ]
-        ]
-
-
-displayDiagnosis : Now -> UserCandidate -> CaseDetailData -> DiagnosisDetailData -> List (Html Msg)
-displayDiagnosis now user caseDetail diagnosis =
-    let
-        judgedAsBy outcome judgedBy =
-            [ text " Judged as " ] ++ outcome ++ [ text " by ", displayNamedNodeLink [ "user" ] judgedBy ]
-    in
-    [ h4 [] [ text diagnosis.node.name ]
-    , ul [] <|
-        displayListItems (displayWager now) diagnosis.wagers
-            ++ (case diagnosis.judgement of
-                    Just judgementData ->
-                        judgedAsBy [ strong [] [ text <| displayOutcome judgementData.outcome ] ] judgementData.judgedBy
-                            ++ [ displayTime now judgementData.timestamp ]
-                            |> li []
-                            |> List.singleton
-
-                    Nothing ->
-                        let
-                            changeWager : Field Int -> Msg
-                            changeWager field =
-                                changeCase { caseDetail | state = AddingWager diagnosis.node.id field }
-                        in
-                        case caseDetail.state of
-                            Viewing ->
-                                (if List.any (\wager -> wager.creator.id == user.node.id) diagnosis.wagers then
-                                    []
-
-                                 else
-                                    [ button
-                                        [ type_ "button", onClick <| changeWager <| FormField.newField validateConfidence ]
-                                        [ text "Add wager" ]
-                                    ]
-                                )
-                                    ++ [ button
-                                            [ type_ "button", onClick <| changeCase { caseDetail | state = Judging diagnosis.node.id } ]
-                                            [ text "Judge" ]
-                                       ]
-                                    |> li []
-                                    |> List.singleton
-
-                            Judging id ->
-                                let
-                                    judgeOutcomeButton outcome label =
-                                        button [ type_ "button", onClick <| SubmitJudgement caseDetail user.node.id diagnosis.node.id outcome ] [ text label ]
-                                in
-                                if id == diagnosis.node.id then
-                                    judgedAsBy [ judgeOutcomeButton Right "Right", judgeOutcomeButton Wrong "Wrong", judgeOutcomeButton Indeterminate "Indeterminate" ]
-                                        user.node
-                                        ++ [ div [] [ cancelEditButton caseDetail ] ]
-                                        |> li []
-                                        |> List.singleton
-
-                                else
-                                    []
-
-                            AddingWager id newWager ->
-                                let
-                                    ( submitButtonDisabled, formAttributes ) =
-                                        case FormField.getValue newWager of
-                                            Ok confidence ->
-                                                ( False, [ onSubmit <| SubmitWager caseDetail user.node.id diagnosis.node.id confidence ] )
-
-                                            Err _ ->
-                                                ( True, [] )
-                                in
-                                if id == diagnosis.node.id then
-                                    [ form formAttributes
-                                        [ displayNamedNodeLink [ "user" ] user.node
-                                        , text " estimated "
-                                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue newWager, FormField.onInput changeWager newWager ] []
-                                        , text "%"
-                                        , div []
-                                            [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
-                                            , cancelEditButton caseDetail
-                                            ]
-                                        ]
-                                    ]
-                                        |> li []
-                                        |> List.singleton
-
-                                else
-                                    []
-
-                            _ ->
-                                []
-               )
-    ]
-
-
-displayNewDiagnosis : UserCandidate -> CaseDetailData -> List (Html Msg)
-displayNewDiagnosis user caseDetail =
-    case caseDetail.state of
-        Viewing ->
-            [ button
-                [ type_ "button", onClick <| changeCase { caseDetail | state = AddingDiagnosis blankPrediction } ]
-                [ text "Add diagnosis" ]
-            ]
-                |> h4 []
-                |> List.singleton
-                |> li []
-                |> List.singleton
-
-        AddingDiagnosis prediction ->
-            let
-                changePrediction newPrediction =
-                    changeCase { caseDetail | state = AddingDiagnosis newPrediction }
-
-                changeDiagnosis diagnosis =
-                    changePrediction { prediction | diagnosis = diagnosis }
-
-                changeConfidence confidence =
-                    changePrediction { prediction | confidence = confidence }
-
-                ( submitButtonDisabled, formAttributes ) =
-                    case ( FormField.getValue prediction.diagnosis, FormField.getValue prediction.confidence ) of
-                        ( Ok diagnosis, Ok confidence ) ->
-                            ( False, [ onSubmit <| SubmitDiagnosis caseDetail user.node.id <| PredictionInput diagnosis confidence Absent ] )
-
-                        _ ->
-                            ( True, [] )
-            in
-            [ form formAttributes
-                [ h4 [] [ input [ type_ "text", placeholder "Diagnosis", FormField.withValue prediction.diagnosis, FormField.onInput changeDiagnosis prediction.diagnosis ] [] ]
-                , ul []
-                    [ li []
-                        [ displayNamedNodeLink [ "user" ] user.node
-                        , text " estimated "
-                        , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue prediction.confidence, FormField.onInput changeConfidence prediction.confidence ] []
-                        , text "%"
-                        ]
-                    ]
-                , button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
-                , cancelEditButton caseDetail
-                ]
-            ]
-                |> li []
-                |> List.singleton
-
-        _ ->
-            []
-
-
-changeCase : CaseDetailData -> Msg
-changeCase newCase =
-    newCase |> Success >> CaseDetail >> StateChanged
-
-
-displayNewComment : UserCandidate -> CaseDetailData -> List (Html Msg)
-displayNewComment user caseDetail =
-    let
-        changeComment : Field String -> Msg
-        changeComment comment =
-            changeCase { caseDetail | state = AddingComment comment }
-    in
-    case caseDetail.state of
-        AddingComment newComment ->
-            let
-                ( submitButtonDisabled, formAttributes ) =
-                    case FormField.getValue newComment of
-                        Ok comment ->
-                            ( False, [ onSubmit <| SubmitComment caseDetail user.node.id comment ] )
-
-                        Err _ ->
-                            ( True, [] )
-            in
-            [ li []
-                [ displayNamedNodeLink [ "user" ] user.node
-                , blockquote []
-                    [ form formAttributes
-                        [ input [ type_ "text", placeholder "Enter comment", FormField.withValue newComment, FormField.onInput changeComment newComment ] []
-                        , button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
-                        , cancelEditButton caseDetail
-                        ]
-                    ]
-                ]
-            ]
-
-        Viewing ->
-            [ li [] [ button [ onClick <| changeComment <| FormField.newNonEmptyStringField "Comment" ] [ text "Add comment" ] ] ]
-
-        _ ->
-            []
-
-
-displayComment : Now -> CommentData -> List (Html msg)
-displayComment now comment =
-    [ displayNamedNodeLink [ "user" ] comment.creator
-    , displayTime now comment.timestamp
-    , blockquote [] [ text comment.text ]
-    ]
-
-
-displayWager : Now -> WagerData -> List (Html msg)
-displayWager now wager =
-    [ displayNamedNodeLink [ "user" ] wager.creator
-    , text " estimated "
-    , b [] [ text <| String.fromInt wager.confidence ++ "%" ]
-    , displayTime now wager.timestamp
-    ]
-
-
-
--- Parse URL
-
-
-type Route
-    = Welcome
-    | User Id
-    | UserScore Id
-    | Events Id
-    | Predictions Id
-    | Groups
-    | Group Id
-    | Case Id
-    | Cases (Maybe String)
-    | New
-    | Import
-
-
-routeParser : Parser (Route -> a) a
-routeParser =
-    oneOf
-        [ map Welcome top
-        , map (User << Id) <| s "user" </> string
-        , map (UserScore << Id) <| s "user" </> string </> s "score"
-        , map (Predictions << Id) <| s "user" </> string </> s "predictions"
-        , map (Events << Id) <| s "user" </> string </> s "events"
-        , map Groups <| s "groups"
-        , map Cases <| s "cases" <?> Url.Parser.Query.string "tag"
-        , map (Group << Id) <| s "group" </> string
-        , map (Case << Id) <| s "case" </> string
-        , map New <| s "new"
-        , map Import <| s "import"
-        ]
-
-
-parseUrlAndRequest : Model -> Url.Url -> ( Model, Cmd Msg )
-parseUrlAndRequest model url =
-    case Url.Parser.parse routeParser url of
-        Just Welcome ->
-            ( { model | state = WelcomePage }, Cmd.none )
-
-        Just (User id) ->
-            ( model, Query.user { id = id } mapToUserDetailData |> makeRequest (UserDetail >> StateChanged) )
-
-        Just (UserScore userId) ->
-            ( model, Query.user { id = userId } (User.scores <| mapToScore) |> makeRequest (ScoreDetail [] >> StateChanged) )
-
-        Just (Predictions userId) ->
-            let
-                params =
-                    PredictionList.initial userId
-            in
-            ( { model | state = PredictionList params Loading }
-            , PredictionList.fetch GotPredictions params
-            )
-
-        Just (Events userId) ->
-            let
-                mapToEventData mapToCaseId mapToCaseReference mapToTimestamp =
-                    SelectionSet.map2 EventData
-                        (SelectionSet.map2 NamedNodeData mapToCaseId mapToCaseReference)
-                        mapToTimestamp
-
-                mapToActivityData mapToCaseId mapToCaseReference mapToTimestamp mapToUserId mapToUserName =
-                    SelectionSet.map2 ActivityData
-                        (mapToEventData mapToCaseId mapToCaseReference mapToTimestamp)
-                        (SelectionSet.map2 NamedNodeData mapToUserId mapToUserName)
-
-                mapToWagerActivity =
-                    SelectionSet.map3 WagerActivity
-                        (mapToActivityData Predictions.Object.WagerActivity.caseId Predictions.Object.WagerActivity.caseReference Predictions.Object.WagerActivity.timestamp Predictions.Object.WagerActivity.userId Predictions.Object.WagerActivity.userName)
-                        Predictions.Object.WagerActivity.diagnosis
-                        Predictions.Object.WagerActivity.confidence
-
-                mapToJudgementActivity =
-                    SelectionSet.map3 JudgementActivity
-                        (mapToActivityData Predictions.Object.JudgementActivity.caseId Predictions.Object.JudgementActivity.caseReference Predictions.Object.JudgementActivity.timestamp Predictions.Object.JudgementActivity.userId Predictions.Object.JudgementActivity.userName)
-                        Predictions.Object.JudgementActivity.diagnosis
-                        Predictions.Object.JudgementActivity.outcome
-
-                mapToCommentActivity =
-                    SelectionSet.map2 CommentActivity
-                        (mapToActivityData Predictions.Object.CommentActivity.caseId Predictions.Object.CommentActivity.caseReference Predictions.Object.CommentActivity.timestamp Predictions.Object.CommentActivity.userId Predictions.Object.CommentActivity.userName)
-                        Predictions.Object.CommentActivity.comment
-
-                mapToGroupCaseActivity =
-                    SelectionSet.map2 GroupCaseActivity
-                        (mapToActivityData Predictions.Object.GroupCaseActivity.caseId Predictions.Object.GroupCaseActivity.caseReference Predictions.Object.GroupCaseActivity.timestamp Predictions.Object.GroupCaseActivity.userId Predictions.Object.GroupCaseActivity.userName)
-                        (SelectionSet.map2 NamedNodeData Predictions.Object.GroupCaseActivity.groupId Predictions.Object.GroupCaseActivity.groupName)
-
-                mapToDeadlineEvent =
-                    SelectionSet.map DeadlineEvent
-                        (mapToEventData Predictions.Object.DeadlineEvent.caseId Predictions.Object.DeadlineEvent.caseReference Predictions.Object.DeadlineEvent.timestamp)
-
-                mapToEventResult : SelectionSet EventResult Event
-                mapToEventResult =
-                    Event.fragments
-                        { onWagerActivity = mapToWagerActivity
-                        , onJudgementActivity = mapToJudgementActivity
-                        , onCommentActivity = mapToCommentActivity
-                        , onGroupCaseActivity = mapToGroupCaseActivity
-                        , onDeadlineEvent = mapToDeadlineEvent
-                        }
-            in
-            ( model, Query.events (\args -> { args | limit = Present 100 }) { userId = userId } mapToEventResult |> makeRequest (EventList >> StateChanged) )
-
-        Just Groups ->
-            ( model, Query.groups identity (SelectionSet.map2 NamedNodeData Group.id Group.name) |> makeRequest (GroupList >> StateChanged) )
-
-        Just (Cases tag) ->
-            case model.auth of
-                SignedIn _ user ->
-                    let
-                        params =
-                            Cases.Params user.node.id tag
-                    in
-                    ( { model | state = CaseList params Loading }
-                    , Query.cases
-                        (\optionalParams -> { optionalParams | tag = OptionalArgument.fromMaybe params.tag })
-                        { userId = params.userId }
-                        (SelectionSet.map2 NamedNodeData Case.id Case.reference)
-                        |> makeRequest (CaseList params >> StateChanged)
-                    )
-
-                _ ->
-                    --todo
-                    ( { model | state = NoData }, Cmd.none )
-
-        Just (Group id) ->
-            ( model, Query.group { id = id } mapToGroupDetailData |> makeRequest (GroupDetail >> StateChanged) )
-
-        Just (Case id) ->
-            ( model, Query.case_ { id = id } mapToCaseDetailData |> makeRequest (CaseDetail >> StateChanged) )
-
-        Just New ->
-            ( { model | state = NewCase NewCase.blankCase }, Cmd.none )
-
-        Just Import ->
-            ( { model | state = ImportFromPB (ImportParams "" 1000 1 "") Nothing NotAsked }, Cmd.none )
-
-        Nothing ->
-            ( { model | state = NoData }, Cmd.none )
-
-
-
--- New
-
-
-submitCase : CaseInput -> Cmd Msg
-submitCase caseData =
-    Mutation.addCase { caseInput = caseData }
-        |> Graphql.Http.mutationRequest graphQlEndpoint
-        |> Graphql.Http.send (RemoteData.fromResult >> CaseCreated)
-
-
-type alias UserDetailData =
-    { node : NamedNodeData
-    , created : Timestamp
-    , score : Maybe Float
-    , groups : List NamedNodeData
-    , casesCreated : List NamedNodeData
-    , tags : List String
-    }
-
-
-mapToUserDetailData =
-    SelectionSet.map6 UserDetailData
-        (SelectionSet.map2 NamedNodeData User.id User.name)
-        User.created
-        (User.score { adjusted = False })
-        (User.groups <| SelectionSet.map2 NamedNodeData Group.id Group.name)
-        (User.casesCreated <| SelectionSet.map2 NamedNodeData Case.id Case.reference)
-        User.tags
-
-
-type alias UserDetailResponse =
-    Maybe UserDetailData
-
-
-userListQuery : SelectionSet (List NamedNodeData) RootQuery
-userListQuery =
-    Query.users <| SelectionSet.map2 NamedNodeData User.id User.name
-
-
-type alias Score =
-    { judged : Timestamp
-    , case_ : NamedNodeData
-    , diagnosis : String
-    , confidence : Int
-    , outcome : Outcome
-    , brierScore : Float
-    , averageBrierScore : Float
-    , adjustedBrierScore : Float
-    }
-
-
-mapToScore =
-    SelectionSet.map8 Score
-        Score.judged
-        (SelectionSet.map2 NamedNodeData Score.caseId Score.reference)
-        Score.diagnosis
-        Score.confidence
-        Score.outcome
-        Score.brierScore
-        Score.averageBrierScore
-        Score.adjustedBrierScore
-
-
-type alias EventData =
-    { case_ : NamedNodeData
-    , timestamp : Timestamp
-    }
-
-
-type alias ActivityData =
-    { event : EventData
-    , user : NamedNodeData
-    }
-
-
-type EventResult
-    = WagerActivity ActivityData String Int
-    | JudgementActivity ActivityData String Outcome
-    | CommentActivity ActivityData String
-    | GroupCaseActivity ActivityData NamedNodeData
-    | DeadlineEvent EventData
-
-
-type alias GroupDetailData =
-    { node : NamedNodeData
-    , members : List NamedNodeData
-    , cases : List NamedNodeData
-    }
-
-
-mapToGroupDetailData =
-    SelectionSet.map3 GroupDetailData
-        (SelectionSet.map2 NamedNodeData Group.id Group.name)
-        (Group.members <| SelectionSet.map2 NamedNodeData User.id User.name)
-        (Group.cases <| SelectionSet.map2 NamedNodeData Case.id Case.reference)
-
-
-type alias CommentData =
-    { creator : NamedNodeData
-    , timestamp : Timestamp
-    , text : String
-    }
-
-
-mapToCommentData =
-    SelectionSet.map3 CommentData
-        (Comment.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
-        Comment.timestamp
-        Comment.text
-
-
-type CaseDetailState
-    = Viewing
-    | ChangingDeadline (Field Timestamp)
-    | ChangingGroup (List NamedNodeData)
-    | AddingDiagnosis PredictionData
-    | AddingWager Id (Field Int)
-    | Judging Id
-    | AddingComment (Field String)
-
-
-type alias CaseDetailData =
-    { state : CaseDetailState
-    , node : NamedNodeData
-    , creator : NamedNodeData
-    , group : Maybe NamedNodeData
-    , deadline : Timestamp
-    , diagnoses : List DiagnosisDetailData
-    , comments : List CommentData
-    , tags : List String
-    }
-
-
-mapToCaseDetailData =
-    SelectionSet.map7 (CaseDetailData Viewing)
-        (SelectionSet.map2 NamedNodeData Case.id Case.reference)
-        (Case.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
-        (Case.group <| SelectionSet.map2 NamedNodeData Group.id Group.name)
-        Case.deadline
-        (Case.diagnoses <| mapToDiagnosisDetailData)
-        (Case.comments <| mapToCommentData)
-        Case.tags
-
-
-type alias CaseDetailResponse =
-    Maybe CaseDetailData
-
-
-type alias DiagnosisLimitedData =
-    NamedNodeData
-
-
-type alias DiagnosisDetailData =
-    { node : NamedNodeData
-    , wagers : List WagerData
-    , judgement : Maybe JudgementData
-    }
-
-
-type alias WagerData =
-    { creator : NamedNodeData
-    , confidence : Int
-    , timestamp : Timestamp
-    }
-
-
-type alias JudgementData =
-    { judgedBy : NamedNodeData
-    , timestamp : Timestamp
-    , outcome : Outcome
-    }
-
-
-mapToDiagnosisDetailData =
-    SelectionSet.map3 DiagnosisDetailData
-        (SelectionSet.map2 NamedNodeData Diagnosis.id Diagnosis.name)
-        (Diagnosis.wagers <| mapToWagerData)
-        (Diagnosis.judgement <| mapToJudgementData)
-
-
-mapToWagerData =
-    SelectionSet.map3 WagerData
-        (Wager.creator <| SelectionSet.map2 NamedNodeData User.id User.name)
-        Wager.confidence
-        Wager.timestamp
-
-
-mapToJudgementData =
-    SelectionSet.map3 JudgementData
-        (Judgement.judgedBy <| SelectionSet.map2 NamedNodeData User.id User.name)
-        Judgement.timestamp
-        Judgement.outcome
-
-
-
--- Helper for fetch
-
-
-makeRequest : (GraphqlRemoteData decodesTo -> msg) -> SelectionSet decodesTo RootQuery -> Cmd msg
-makeRequest msgConstructor set =
-    set
-        |> Graphql.Http.queryRequest graphQlEndpoint
-        |> Graphql.Http.send (RemoteData.fromResult >> msgConstructor)
+caseUrl : Id -> String
+caseUrl (Id id) =
+    Url.Builder.absolute [ "cases", id ] []
