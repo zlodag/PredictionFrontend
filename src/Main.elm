@@ -11,12 +11,13 @@ import Graphql.Http
 import Graphql.Operation exposing (RootQuery)
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Helper exposing (Now, displayOutcomeSymbol, displayTime, getShortDateString)
-import Html exposing (Html, a, button, dd, div, dl, dt, form, hr, input, label, li, p, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (disabled, for, href, id, placeholder, style, type_, value)
-import Html.Events exposing (onClick, onInput, onSubmit)
+import Html exposing (Html, a, button, dd, div, dl, dt, hr, li, p, table, tbody, td, text, th, thead, tr, ul)
+import Html.Attributes exposing (href, id, style, type_, value)
+import Html.Events exposing (onClick)
 import Http exposing (Error(..), Resolver)
 import Json.Decode as D
 import Json.Encode as E
+import Login exposing (Credentials, blankCredentials, displaySignInForm, encodeCredentials)
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.Object.Group
 import Predictions.Object.Score
@@ -67,17 +68,6 @@ type Auth
     = LoggedOut (Maybe (Html Msg)) Credentials
     | LoggingIn Credentials
     | LoggedIn UserInfo Data
-
-
-type alias Credentials =
-    { username : String
-    , password : String
-    }
-
-
-blankCredentials : Credentials
-blankCredentials =
-    Credentials "" ""
 
 
 type alias UserInfo =
@@ -207,7 +197,7 @@ update msg model =
             ( { model | auth = LoggingIn credentials }
             , Http.post
                 { url = Url.Builder.absolute [ "auth", "login" ] []
-                , body = Http.jsonBody <| E.object [ ( "username", E.string credentials.username ), ( "password", E.string credentials.password ) ]
+                , body = Http.jsonBody <| encodeCredentials credentials
                 , expect = Http.expectStringResponse resultToMsg responseToResult
                 }
             )
@@ -391,29 +381,9 @@ view model =
 
 viewModel : Model -> List (Html Msg)
 viewModel model =
-    let
-        changeUsername credentials newUsername =
-            { credentials | username = newUsername }
-
-        changePassword credentials newPassword =
-            { credentials | password = newPassword }
-
-        displaySignInForm updateCredentials disableInputs credentials =
-            form [ onSubmit <| Login credentials ]
-                [ div []
-                    [ label [ for "username" ] [ text "Username: " ]
-                    , input [ id "username", placeholder "Username", type_ "text", value credentials.username, onInput (changeUsername credentials >> updateCredentials), disabled disableInputs ] []
-                    ]
-                , div []
-                    [ label [ for "password" ] [ text "Password: " ]
-                    , input [ id "password", placeholder "Password", type_ "password", value credentials.password, onInput (changePassword credentials >> updateCredentials), disabled disableInputs ] []
-                    ]
-                , button [ type_ "submit", disabled disableInputs ] [ text "Sign in" ]
-                ]
-    in
     case model.auth of
         LoggedOut error credentials ->
-            displaySignInForm (LoggedOut error >> DataUpdated) False credentials
+            displaySignInForm Login (LoggedOut error >> DataUpdated) False credentials
                 :: (case error of
                         Just e ->
                             [ e ]
@@ -423,7 +393,7 @@ viewModel model =
                    )
 
         LoggingIn credentials ->
-            [ displaySignInForm (LoggedOut Nothing >> DataUpdated) True credentials ]
+            [ displaySignInForm Login (LoggedOut Nothing >> DataUpdated) True credentials ]
 
         LoggedIn userInfo data ->
             [ div [] [ text "Welcome, ", displayNamedNode userUrl userInfo.node ]
