@@ -1,4 +1,4 @@
-module Login exposing (Credentials, blankCredentials, displaySignInForm, login)
+module Login exposing (Credentials, blankCredentials, login, viewSignInForm)
 
 import Common exposing (NamedNodeData, UserInfo)
 import Error
@@ -43,8 +43,8 @@ decodeUser =
         (D.field "refreshToken" D.string)
 
 
-displaySignInForm : (Credentials -> msg) -> (Credentials -> msg) -> Bool -> Credentials -> Html msg
-displaySignInForm loginMsg updateCredentials disableInputs (Credentials username password) =
+viewSignInForm : (Credentials -> msg) -> (Credentials -> msg) -> Bool -> Credentials -> Html msg
+viewSignInForm loginMsg updateCredentials disableInputs (Credentials username password) =
     let
         changeUsername : Username -> msg
         changeUsername newUsername =
