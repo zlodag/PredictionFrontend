@@ -1,89 +1,17 @@
 module Common exposing (..)
 
-import Browser exposing (Document)
-import Browser.Navigation as Nav
-import Cases
-import Chart.Item as CI
-import Dict
-import FormField exposing (Field)
-import Graphql.Http
-import Html exposing (Html)
-import NewCase
-import PredictionList
+import Html exposing (Html, a, span, text)
+import Html.Attributes exposing (href, title)
 import Predictions.Enum.Outcome exposing (Outcome(..))
-import Predictions.InputObject exposing (CaseInput, CommentInput, PredictionInput)
 import Predictions.Scalar exposing (Id(..))
-import RemoteData exposing (RemoteData(..), WebData)
-import ScalarCodecs exposing (Id, Timestamp)
-import String
-import Time
-import Url
+import Time exposing (Month(..), Weekday(..))
+import Time.Distance
+import Url.Builder
 
 
-type alias Model =
-    { key : Nav.Key
-    , now : Now
-    , state : State
-    }
-
-
-type State
-    = SignedOut (Maybe (Html Msg)) Credentials
-    | SigningIn Credentials
-    | SignedIn User Data
-
-
-type Data
-    = NoData
-    | UserDetail (GraphqlRemoteData UserDetailData)
-    | ScoreDetail (List (CI.One Score CI.Dot)) (GraphqlRemoteData (List Score))
-    | PredictionList PredictionList.Params PredictionList.Predictions
-    | CaseList Cases.Params Cases.Cases
-    | EventList (GraphqlRemoteData (List EventResult))
-    | GroupList (GraphqlRemoteData (List NamedNodeData))
-    | GroupDetail (GraphqlRemoteData GroupDetailData)
-    | CaseDetail (GraphqlRemoteData CaseDetailData)
-    | NewCase (Maybe String) NewCase.Data
-    | ImportFromPB ImportParams (Maybe Id) (RemoteData (Html Msg) ImportedData)
-
-
-type Msg
-    = NewTime Time.Zone Time.Posix
-    | LinkClicked Browser.UrlRequest
-    | UrlChanged Url.Url
-    | GotState State
-    | SignIn Credentials
-    | SubmitCase NewCase.Data CaseInput
-    | SubmitComment CaseDetailData String
-    | SubmitDeadline CaseDetailData Timestamp
-    | SubmitGroup CaseDetailData (Maybe Id)
-    | SubmitDiagnosis CaseDetailData PredictionInput
-    | SubmitWager CaseDetailData Id Int
-    | SubmitJudgement CaseDetailData Id Outcome
-    | CaseCreated Id
-    | ChangeImportParams ImportParams
-    | ImportData ImportParams
-    | GotImportedDataResult ImportParams (RemoteData (Html Msg) ImportedData)
-    | GotDecrypted (List EncryptedReference)
-    | ImportToDatabase (List CaseInput)
-    | CasesImported Int
-    | FetchPredictions PredictionList.Params
-    | GotPredictions PredictionList.Params PredictionList.Predictions
-
-
-type alias GraphqlRemoteData a =
-    RemoteData (Graphql.Http.Error a) a
-
-
-type alias Credentials =
-    { username : String
-    , password : String
-    }
-
-
-blankCredentials =
-    { username = ""
-    , password = ""
+type alias Now =
+    { zone : Time.Zone
+    , posix : Time.Posix
     }
 
 
@@ -93,169 +21,151 @@ type alias NamedNodeData =
     }
 
 
-type alias User =
+type alias UserInfo =
     { node : NamedNodeData
-    , token : String
+    , accessToken : String
+    , refreshToken : String
     }
 
 
-type alias UserDetailData =
-    { node : NamedNodeData
-    , created : Timestamp
-    , score : Maybe Float
-    , groups : List NamedNodeData
-    , casesCreated : List NamedNodeData
-    , tags : List String
-    }
+displayNamedNode : (Id -> String) -> NamedNodeData -> Html msg
+displayNamedNode toUrl node =
+    a [ node.id |> toUrl |> href ] [ text node.name ]
 
 
-type alias GroupDetailData =
-    { node : NamedNodeData
-    , members : List NamedNodeData
-    , cases : List NamedNodeData
-    }
+userUrl : Id -> String
+userUrl (Id id) =
+    Url.Builder.absolute [ "users", id ] []
 
 
-type alias CaseDetailData =
-    { state : CaseDetailState
-    , node : NamedNodeData
-    , creator : NamedNodeData
-    , group : Maybe NamedNodeData
-    , deadline : Timestamp
-    , diagnoses : List DiagnosisDetailData
-    , comments : List CommentData
-    , tags : List String
-    }
+groupUrl : Id -> String
+groupUrl (Id id) =
+    Url.Builder.absolute [ "groups", id ] []
 
 
-type CaseDetailState
-    = Viewing
-    | ChangingDeadline (Field Timestamp)
-    | ChangingGroup (List NamedNodeData)
-    | AddingDiagnosis PredictionData
-    | AddingWager Id (Field Int)
-    | Judging Id
-    | AddingComment (Field String)
+caseUrl : Id -> String
+caseUrl (Id id) =
+    Url.Builder.absolute [ "cases", id ] []
 
 
-type alias PredictionData =
-    { diagnosis : Field String
-    , confidence : Field Int
-    }
+displayTime : Now -> Time.Posix -> Html msg
+displayTime now timeToDisplay =
+    span [ title <| getTimeString now.zone timeToDisplay ] [ text <| " " ++ Time.Distance.inWords timeToDisplay now.posix ]
 
 
-type alias DiagnosisDetailData =
-    { node : NamedNodeData
-    , wagers : List WagerData
-    , judgement : Maybe JudgementData
-    }
+getTimeString : Time.Zone -> Time.Posix -> String
+getTimeString zone time =
+    toWeekday (Time.toWeekday zone time)
+        ++ " "
+        -- DD
+        ++ toPaddedString 2 (Time.toDay zone time)
+        ++ "/"
+        -- MM
+        ++ toPaddedString 2 (fromMonth (Time.toMonth zone time))
+        ++ "/"
+        -- YYYY
+        ++ toPaddedString 4 (Time.toYear zone time)
+        ++ " "
+        -- HH
+        ++ toPaddedString 2 (Time.toHour zone time)
+        ++ ":"
+        -- mm
+        ++ toPaddedString 2 (Time.toMinute zone time)
+        ++ ":"
+        -- ss
+        ++ toPaddedString 2 (Time.toSecond zone time)
 
 
-type alias WagerData =
-    { creator : NamedNodeData
-    , confidence : Int
-    , timestamp : Timestamp
-    }
+toWeekday : Weekday -> String
+toWeekday weekday =
+    case weekday of
+        Mon ->
+            "Monday"
+
+        Tue ->
+            "Tuesday"
+
+        Wed ->
+            "Wednesday"
+
+        Thu ->
+            "Thursday"
+
+        Fri ->
+            "Friday"
+
+        Sat ->
+            "Saturday"
+
+        Sun ->
+            "Sunday"
 
 
-type alias JudgementData =
-    { judgedBy : NamedNodeData
-    , timestamp : Timestamp
-    , outcome : Outcome
-    }
+displayOutcomeSymbol : Outcome -> String
+displayOutcomeSymbol outcome =
+    case outcome of
+        Right ->
+            "✔"
+
+        Wrong ->
+            "✗"
+
+        Indeterminate ->
+            "?"
 
 
-type alias CommentData =
-    { creator : NamedNodeData
-    , timestamp : Timestamp
-    , text : String
-    }
+getShortDateString : Time.Zone -> Time.Posix -> String
+getShortDateString zone time =
+    -- DD
+    toPaddedString 2 (Time.toDay zone time)
+        ++ "/"
+        -- MM
+        ++ toPaddedString 2 (fromMonth <| Time.toMonth zone time)
+        ++ "/"
+        -- YY
+        ++ toPaddedString 2 (remainderBy 100 <| Time.toYear zone time)
 
 
-type alias Score =
-    { judged : Timestamp
-    , case_ : NamedNodeData
-    , diagnosis : String
-    , confidence : Int
-    , outcome : Outcome
-    , brierScore : Float
-    , averageBrierScore : Float
-    , adjustedBrierScore : Float
-    }
+toPaddedString : Int -> Int -> String
+toPaddedString digits time =
+    String.padLeft digits '0' (String.fromInt time)
 
 
-type EventResult
-    = WagerActivity ActivityData String Int
-    | JudgementActivity ActivityData String Outcome
-    | CommentActivity ActivityData String
-    | GroupCaseActivity ActivityData NamedNodeData
-    | DeadlineEvent EventData
+fromMonth : Time.Month -> Int
+fromMonth month =
+    case month of
+        Jan ->
+            1
 
+        Feb ->
+            2
 
-type alias ActivityData =
-    { event : EventData
-    , user : NamedNodeData
-    }
+        Mar ->
+            3
 
+        Apr ->
+            4
 
-type alias EventData =
-    { case_ : NamedNodeData
-    , timestamp : Timestamp
-    }
+        May ->
+            5
 
+        Jun ->
+            6
 
-type alias ImportParams =
-    { apiToken : String
-    , pageSize : Int
-    , page : Int
-    , password : String
-    }
+        Jul ->
+            7
 
+        Aug ->
+            8
 
-type alias ImportedData =
-    { user : ImportedUser
-    , predictions : ImportedCases
-    }
+        Sep ->
+            9
 
+        Oct ->
+            10
 
-type alias ImportedUser =
-    { name : String
-    , email : String
-    , userId : Int
-    }
+        Nov ->
+            11
 
-
-type alias ImportedCases =
-    { count : Int
-    , cases : Dict.Dict Int ImportedCase
-    }
-
-
-type alias ImportedCase =
-    { reference : EncryptedReference
-    , created : Timestamp
-    , deadline : Timestamp
-    , diagnoses : List ImportedDiagnosis
-    , comments : List ImportedComment
-    , selected : Bool
-    }
-
-
-type alias EncryptedReference =
-    { groupId : Int
-    , ciphertext : String
-    , cleartext : Maybe String
-    }
-
-
-type alias ImportedDiagnosis =
-    { diagnosis : String
-    , confidence : Int
-    , outcome : Maybe Outcome
-    }
-
-
-type alias ImportedComment =
-    { timestamp : Timestamp
-    , text : String
-    }
+        Dec ->
+            12

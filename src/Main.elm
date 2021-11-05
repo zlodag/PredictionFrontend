@@ -6,18 +6,19 @@ import Chart as C
 import Chart.Attributes as CA
 import Chart.Events as CE
 import Chart.Item as CI
+import Common exposing (NamedNodeData, Now, UserInfo, caseUrl, displayNamedNode, displayOutcomeSymbol, displayTime, getShortDateString, groupUrl, userUrl)
 import Error
 import Graphql.Http
 import Graphql.Operation exposing (RootQuery)
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
-import Helper exposing (Now, displayOutcomeSymbol, displayTime, getShortDateString)
 import Html exposing (Html, a, button, dd, div, dl, dt, hr, li, p, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (href, id, style, type_, value)
+import Html.Attributes exposing (href, style, type_)
 import Html.Events exposing (onClick)
 import Http exposing (Error(..), Resolver)
 import Json.Decode as D
 import Json.Encode as E
-import Login exposing (Credentials, blankCredentials, displaySignInForm, encodeCredentials)
+import Login exposing (Credentials, blankCredentials, displaySignInForm)
+import MyDetails
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.Object.Group
 import Predictions.Object.Score
@@ -70,16 +71,9 @@ type Auth
     | LoggedIn UserInfo Data
 
 
-type alias UserInfo =
-    { node : NamedNodeData
-    , accessToken : String
-    , refreshToken : String
-    }
-
-
 type Data
     = NoData
-    | Me (HtmlRemoteData MyDetails)
+    | Me (HtmlRemoteData MyDetails.Data)
     | GroupList (HtmlRemoteData GroupListData)
     | GroupDetail (HtmlRemoteData GroupDetailData)
     | UserDetail (HtmlRemoteData NamedNodeData)
@@ -88,19 +82,6 @@ type Data
 
 type alias HtmlRemoteData a =
     RemoteData (Html Msg) a
-
-
-type alias NamedNodeData =
-    { id : Id
-    , name : String
-    }
-
-
-type alias MyDetails =
-    { node : NamedNodeData
-    , created : Timestamp
-    , score : Maybe Float
-    }
 
 
 type alias GroupListData =
@@ -163,28 +144,6 @@ update msg model =
 
         Login credentials ->
             let
-                userDecoder : D.Decoder UserInfo
-                userDecoder =
-                    D.map3
-                        UserInfo
-                        (D.field "user" <| D.map2 NamedNodeData (D.field "id" <| D.map Id D.string) (D.field "name" D.string))
-                        (D.field "accessToken" D.string)
-                        (D.field "refreshToken" D.string)
-
-                responseToResult : Http.Response String -> Result (Html msg) UserInfo
-                responseToResult response =
-                    case response of
-                        Http.GoodStatus_ _ body ->
-                            case D.decodeString userDecoder body of
-                                Ok value ->
-                                    Ok value
-
-                                _ ->
-                                    Err <| Error.responseToHtml response
-
-                        _ ->
-                            Err <| Error.responseToHtml response
-
                 resultToMsg : Result (Html Msg) UserInfo -> Msg
                 resultToMsg result =
                     case result of
@@ -195,11 +154,7 @@ update msg model =
                             LoggedOut (Just error) credentials |> DataUpdated
             in
             ( { model | auth = LoggingIn credentials }
-            , Http.post
-                { url = Url.Builder.absolute [ "auth", "login" ] []
-                , body = Http.jsonBody <| encodeCredentials credentials
-                , expect = Http.expectStringResponse resultToMsg responseToResult
-                }
+            , Login.login resultToMsg credentials
             )
 
         Logout ->
@@ -239,11 +194,7 @@ parseUrlAndRequest url model =
         ( LoggedIn userData _, Just (UserDetailRoute userId) ) ->
             if userId == userData.node.id then
                 ( { model | auth = LoggedIn userData (Me Loading) }
-                , SelectionSet.map3 MyDetails
-                    (SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name)
-                    Predictions.Object.User.created
-                    (Predictions.Object.User.score { adjusted = False })
-                    |> Predictions.Query.user { id = userId }
+                , MyDetails.selectionSet userId
                     |> sendRequest Me userData
                 )
 
@@ -414,7 +365,7 @@ displayData now userInfo remoteData =
             p [] [ text "Click on a link to begin" ]
 
         Me data ->
-            displayRemoteData (displayMyDetails now) data
+            displayRemoteData (MyDetails.view now) data
 
         GroupList data ->
             displayRemoteData displayGroupList data
@@ -443,36 +394,6 @@ displayRemoteData displayFunction remoteData =
 
         Success data ->
             displayFunction data
-
-
-displayMyDetails : Now -> MyDetails -> Html Msg
-displayMyDetails now myDetails =
-    dl []
-        [ dt [] [ text "Me" ]
-        , dd [] [ displayNamedNode userUrl myDetails.node ]
-        , dt [] [ text "Created" ]
-        , dd [] [ displayTime now myDetails.created ]
-        , dt [] [ text "Score" ]
-        , dd []
-            [ case myDetails.score of
-                Just score ->
-                    a
-                        [ href <|
-                            Url.Builder.absolute
-                                [ "user"
-                                , case myDetails.node.id of
-                                    Id id ->
-                                        id
-                                , "score"
-                                ]
-                                []
-                        ]
-                        [ text <| Round.round 4 score ]
-
-                Nothing ->
-                    text "No predictions judged yet"
-            ]
-        ]
 
 
 displayGroupList : GroupListData -> Html Msg
@@ -656,23 +577,3 @@ displayConfidenceHistogram scores =
         , C.labelAt (CA.percent 50) (CA.percent 0) [ CA.moveDown 35, CA.fontSize 12 ] [ S.text "Confidence (%)" ]
         , C.legendsAt .max .max [ CA.alignRight, CA.moveUp 30 ] []
         ]
-
-
-displayNamedNode : (Id -> String) -> NamedNodeData -> Html msg
-displayNamedNode toUrl node =
-    a [ node.id |> toUrl |> href ] [ text node.name ]
-
-
-userUrl : Id -> String
-userUrl (Id id) =
-    Url.Builder.absolute [ "users", id ] []
-
-
-groupUrl : Id -> String
-groupUrl (Id id) =
-    Url.Builder.absolute [ "groups", id ] []
-
-
-caseUrl : Id -> String
-caseUrl (Id id) =
-    Url.Builder.absolute [ "cases", id ] []
