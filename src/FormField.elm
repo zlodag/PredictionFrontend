@@ -1,8 +1,10 @@
-module FormField exposing (Field, displayValidity, getValue, newField, newNonEmptyStringField, onInput, withValue)
+module FormField exposing (Field, displayValidity, getValue, newField, newNonEmptyStringField, onInput, validateDeadline, withValue)
 
 import Html exposing (Attribute, Html, span, text)
 import Html.Attributes exposing (style, value)
 import Html.Events
+import Iso8601
+import ScalarCodecs exposing (Timestamp)
 
 
 withValue : Field a -> Attribute msg
@@ -79,3 +81,12 @@ type alias FieldData a =
     , value : Result String a
     , validator : String -> Result String a
     }
+
+
+validateDeadline : String -> Result String Timestamp
+validateDeadline deadline =
+    let
+        errorMapper _ =
+            "Could not parse as ISO-8601 datetime string"
+    in
+    Result.mapError errorMapper <| Iso8601.toTime deadline

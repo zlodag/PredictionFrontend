@@ -1,6 +1,6 @@
 module Common exposing (..)
 
-import Html exposing (Html, a, span, text)
+import Html exposing (Html, a, li, span, text)
 import Html.Attributes exposing (href, title)
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.Scalar exposing (Id(..))
@@ -46,6 +46,11 @@ groupUrl (Id id) =
 caseUrl : Id -> String
 caseUrl (Id id) =
     Url.Builder.absolute [ "cases", id ] []
+
+
+displayListItems : (a -> List (Html msg)) -> List a -> List (Html msg)
+displayListItems displayFunction list =
+    List.map (li [] << displayFunction) list
 
 
 displayTime : Now -> Time.Posix -> Html msg
@@ -99,6 +104,19 @@ toWeekday weekday =
 
         Sun ->
             "Sunday"
+
+
+displayOutcome : Outcome -> String
+displayOutcome outcome =
+    case outcome of
+        Right ->
+            "Right"
+
+        Wrong ->
+            "Wrong"
+
+        Indeterminate ->
+            "Indeterminate"
 
 
 displayOutcomeSymbol : Outcome -> String

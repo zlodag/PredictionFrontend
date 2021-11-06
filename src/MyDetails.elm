@@ -1,7 +1,8 @@
-module MyDetails exposing (Data, selectionSet, view)
+module MyDetails exposing (Data, queryRequest, view)
 
 import Common exposing (NamedNodeData, Now, displayNamedNode, displayTime, userUrl)
-import Graphql.Operation exposing (RootQuery)
+import Config exposing (api)
+import Graphql.Http
 import Graphql.SelectionSet as SelectionSet
 import Html exposing (Html, a, dd, dl, dt, text)
 import Html.Attributes exposing (href)
@@ -24,14 +25,15 @@ type alias MyDetails =
     }
 
 
-selectionSet : Id -> SelectionSet.SelectionSet Data RootQuery
-selectionSet userId =
+queryRequest : Id -> Graphql.Http.Request Data
+queryRequest userId =
     SelectionSet.map3 MyDetails
         (SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name)
         Predictions.Object.User.created
         (Predictions.Object.User.score { adjusted = False })
         |> SelectionSet.map Data
         |> Predictions.Query.user { id = userId }
+        |> Graphql.Http.queryRequest api
 
 
 view : Now -> Data -> Html msg
@@ -48,7 +50,7 @@ view now (Data myDetails) =
                     a
                         [ href <|
                             Url.Builder.absolute
-                                [ "user"
+                                [ "users"
                                 , case myDetails.node.id of
                                     Id id ->
                                         id

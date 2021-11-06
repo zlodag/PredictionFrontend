@@ -2,10 +2,11 @@ module Main exposing (main)
 
 import Browser exposing (Document)
 import Browser.Navigation as Nav
+import CaseDetail
 import Common exposing (NamedNodeData, Now, UserInfo, displayNamedNode, groupUrl, userUrl)
+import Config exposing (api)
 import Error
 import Graphql.Http
-import Graphql.Operation exposing (RootQuery)
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 import Html exposing (Html, a, button, dd, div, dl, dt, hr, li, p, text, ul)
 import Html.Attributes exposing (href, type_)
@@ -70,6 +71,7 @@ type Data
     | GroupDetail (HtmlRemoteData GroupDetailData)
     | UserDetail (HtmlRemoteData NamedNodeData)
     | UserScore (HtmlRemoteData UserScore.Data)
+    | CaseDetail (HtmlRemoteData CaseDetail.Data)
 
 
 type alias HtmlRemoteData a =
@@ -92,6 +94,7 @@ type Msg
     | UrlChanged Url.Url
     | LoggedInOK UserInfo
     | DataUpdated Auth
+    | AddComment UserInfo CaseDetail.Data String
     | Login Credentials
     | Logout
 
@@ -142,6 +145,24 @@ update msg model =
             , Cmd.none
             )
 
+        AddComment userInfo data string ->
+            let
+                toData remoteData =
+                    (case remoteData of
+                        Success a ->
+                            CaseDetail.onCommentResult data a
+
+                        _ ->
+                            data
+                    )
+                        |> Success
+                        >> CaseDetail
+            in
+            ( { model | auth = LoggedIn userInfo <| CaseDetail <| Success data }
+            , CaseDetail.addComment data string
+                |> sendRequest toData userInfo
+            )
+
 
 type Route
     = Welcome
@@ -149,6 +170,7 @@ type Route
     | UserScoreRoute Id
     | GroupsRoute
     | GroupDetailRoute Id
+    | CaseDetailRoute Id
 
 
 routeParser : Parser (Route -> a) a
@@ -158,7 +180,8 @@ routeParser =
         , map GroupsRoute <| s "groups"
         , map (GroupDetailRoute << Id) <| s "groups" </> string
         , map (UserDetailRoute << Id) <| s "users" </> string
-        , map (UserScoreRoute << Id) <| s "user" </> string </> s "score"
+        , map (UserScoreRoute << Id) <| s "users" </> string </> s "score"
+        , map (CaseDetailRoute << Id) <| s "cases" </> string
         ]
 
 
@@ -174,7 +197,7 @@ parseUrlAndRequest url model =
         ( LoggedIn userData _, Just (UserDetailRoute userId) ) ->
             if userId == userData.node.id then
                 ( { model | auth = LoggedIn userData (Me Loading) }
-                , MyDetails.selectionSet userId
+                , MyDetails.queryRequest userId
                     |> sendRequest Me userData
                 )
 
@@ -182,6 +205,7 @@ parseUrlAndRequest url model =
                 ( { model | auth = LoggedIn userData (UserDetail Loading) }
                 , SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name
                     |> Predictions.Query.user { id = userId }
+                    |> Graphql.Http.queryRequest api
                     |> sendRequest UserDetail userData
                 )
 
@@ -190,6 +214,7 @@ parseUrlAndRequest url model =
             , SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name
                 |> Predictions.Object.User.groups
                 |> Predictions.Query.user { id = userData.node.id }
+                |> Graphql.Http.queryRequest api
                 |> sendRequest GroupList userData
             )
 
@@ -199,25 +224,27 @@ parseUrlAndRequest url model =
                 |> Predictions.Object.Group.members
                 |> SelectionSet.map2 GroupDetailData (SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name)
                 |> Predictions.Query.group { id = groupId }
+                |> Graphql.Http.queryRequest api
                 |> sendRequest GroupDetail userData
             )
 
         ( LoggedIn userData _, Just (UserScoreRoute userId) ) ->
             ( { model | auth = LoggedIn userData (UserScore Loading) }
-            , UserScore.selectionSet userId
+            , UserScore.queryRequest userId
                 |> sendRequest UserScore userData
+            )
+
+        ( LoggedIn userData _, Just (CaseDetailRoute caseId) ) ->
+            ( { model | auth = LoggedIn userData (UserScore Loading) }
+            , CaseDetail.queryRequest caseId
+                |> sendRequest CaseDetail userData
             )
 
         _ ->
             ( model, Nav.pushUrl model.key "/" )
 
 
-api : String
-api =
-    Url.Builder.absolute [ "api" ] []
-
-
-sendRequest : (HtmlRemoteData a -> Data) -> UserInfo -> SelectionSet a RootQuery -> Cmd Msg
+sendRequest : (HtmlRemoteData a -> Data) -> UserInfo -> Graphql.Http.Request a -> Cmd Msg
 sendRequest toData originalUser request =
     let
         resultToMessage : Result ( UserInfo, Html Msg ) ( UserInfo, a ) -> Msg
@@ -238,17 +265,16 @@ sendRequest toData originalUser request =
         |> Task.attempt resultToMessage
 
 
-requestToTask : SelectionSet a RootQuery -> UserInfo -> Task.Task ( UserInfo, Graphql.Http.Error a ) ( UserInfo, a )
+requestToTask : Graphql.Http.Request a -> UserInfo -> Task.Task ( UserInfo, Graphql.Http.Error a ) ( UserInfo, a )
 requestToTask request user =
     request
-        |> Graphql.Http.queryRequest api
         |> Graphql.Http.withHeader "Authorization" ("Bearer " ++ user.accessToken)
         |> Graphql.Http.toTask
         |> Task.map (Tuple.pair user)
         |> Task.mapError (Tuple.pair user)
 
 
-refreshTokenAndTryAgain : SelectionSet a RootQuery -> ( UserInfo, Graphql.Http.Error a ) -> Task.Task ( UserInfo, Html Msg ) ( UserInfo, a )
+refreshTokenAndTryAgain : Graphql.Http.Request a -> ( UserInfo, Graphql.Http.Error a ) -> Task.Task ( UserInfo, Html Msg ) ( UserInfo, a )
 refreshTokenAndTryAgain request ( originalUser, originalError ) =
     let
         onRefresh : Http.Response String -> Result (Html Msg) UserInfo
@@ -348,6 +374,16 @@ displayData now userInfo remoteData =
 
         UserScore data ->
             displayRemoteData (UserScore.view (Success >> UserScore >> LoggedIn userInfo >> DataUpdated) now) data
+
+        CaseDetail data ->
+            displayRemoteData
+                (CaseDetail.view
+                    (Success >> CaseDetail >> LoggedIn userInfo >> DataUpdated)
+                    (AddComment userInfo)
+                    now
+                    userInfo.node
+                )
+                data
 
 
 displayRemoteData : (a -> Html Msg) -> HtmlRemoteData a -> Html Msg

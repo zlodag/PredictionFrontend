@@ -1,11 +1,12 @@
-module UserScore exposing (Data, selectionSet, view)
+module UserScore exposing (Data, queryRequest, view)
 
 import Chart as C
 import Chart.Attributes as CA
 import Chart.Events as CE
 import Chart.Item as CI
 import Common exposing (NamedNodeData, Now, UserInfo, caseUrl, displayNamedNode, displayOutcomeSymbol, displayTime, getShortDateString)
-import Graphql.Operation exposing (RootQuery)
+import Config exposing (api)
+import Graphql.Http
 import Graphql.SelectionSet as SelectionSet
 import Html exposing (Html, div, table, tbody, td, text, th, thead, tr)
 import Html.Attributes exposing (style)
@@ -40,8 +41,8 @@ type alias Score =
     }
 
 
-selectionSet : Id -> SelectionSet.SelectionSet Data RootQuery
-selectionSet userId =
+queryRequest : Id -> Graphql.Http.Request Data
+queryRequest userId =
     SelectionSet.map8 Score
         Predictions.Object.Score.judged
         (SelectionSet.map2 NamedNodeData Predictions.Object.Score.caseId Predictions.Object.Score.reference)
@@ -54,6 +55,7 @@ selectionSet userId =
         |> Predictions.Object.User.scores
         |> SelectionSet.map (Data [])
         |> Predictions.Query.user { id = userId }
+        |> Graphql.Http.queryRequest api
 
 
 view : (Data -> msg) -> Now -> Data -> Html msg

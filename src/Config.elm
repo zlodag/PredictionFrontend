@@ -1,5 +1,8 @@
-module Config exposing (graphQlEndpoint)
+module Config exposing (api)
+
+import Url.Builder
 
 
-graphQlEndpoint =
-    "http://localhost:3000/graphql"
+api : String
+api =
+    Url.Builder.absolute [ "api" ] []
