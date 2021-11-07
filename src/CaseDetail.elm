@@ -2,6 +2,7 @@ module CaseDetail exposing (Data, addComment, onCommentResult, queryRequest, vie
 
 import Common exposing (NamedNodeData, Now, caseUrl, displayListItems, displayNamedNode, displayTime, groupUrl, userUrl)
 import Config exposing (api)
+import Error
 import FormField exposing (Field)
 import Graphql.Http
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
@@ -33,7 +34,7 @@ type State
       --| AddingDiagnosis PredictionData
       --| AddingWager Id (Field Int)
       --| Judging Id
-    | AddingComment (Field String)
+    | AddingComment (Field String) (Maybe (Graphql.Http.Error ()))
 
 
 type alias Case =
@@ -352,10 +353,10 @@ view dataUpdated addCommentMsg now currentUser (Data state case_) =
             let
                 changeComment : Field String -> msg
                 changeComment comment =
-                    changeState <| AddingComment comment
+                    changeState <| AddingComment comment Nothing
             in
             case state of
-                AddingComment newComment ->
+                AddingComment newComment error ->
                     let
                         ( submitButtonDisabled, formAttributes ) =
                             case FormField.getValue newComment of
@@ -368,19 +369,21 @@ view dataUpdated addCommentMsg now currentUser (Data state case_) =
                                     ( True, [] )
                     in
                     [ li []
-                        [ displayNamedNode userUrl currentUser
-                        , blockquote []
+                        ([ displayNamedNode userUrl currentUser
+                         , blockquote []
                             [ form formAttributes
                                 [ input [ type_ "text", placeholder "Enter comment", FormField.withValue newComment, FormField.onInput changeComment newComment ] []
                                 , button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
                                 , cancelEditButton
                                 ]
                             ]
-                        ]
+                         ]
+                            ++ Maybe.withDefault [] (Maybe.map (Error.graphqlHttpErrorToHtml >> List.singleton >> div [] >> List.singleton) error)
+                        )
                     ]
 
                 Viewing ->
-                    [ li [] [ button [ onClick <| changeComment <| FormField.newNonEmptyStringField "Comment" ] [ text "Add comment" ] ] ]
+                    [ li [] [ button [ onClick <| changeComment <| newCommentInput ] [ text "Add comment" ] ] ]
 
                 _ ->
                     []
@@ -407,12 +410,34 @@ view dataUpdated addCommentMsg now currentUser (Data state case_) =
         ]
 
 
+newCommentInput : Field String
+newCommentInput =
+    FormField.newNonEmptyStringField "Comment"
+
+
 addComment : Data -> String -> Graphql.Http.Request Comment
 addComment (Data _ case_) text =
     Predictions.Mutation.addComment { caseId = case_.node.id, text = text } mapToComment
         |> Graphql.Http.mutationRequest api
 
 
-onCommentResult : Data -> Comment -> Data
-onCommentResult (Data state case_) comment =
-    Data Viewing { case_ | comments = case_.comments ++ [ comment ] }
+onCommentResult : Data -> Result (Graphql.Http.Error ()) Comment -> Data
+onCommentResult (Data state case_) c =
+    case c of
+        Ok comment ->
+            Data Viewing { case_ | comments = case_.comments ++ [ comment ] }
+
+        Err error ->
+            Data
+                (AddingComment
+                    (case state of
+                        AddingComment input _ ->
+                            input
+
+                        _ ->
+                            newCommentInput
+                    )
+                 <|
+                    Just error
+                )
+                case_

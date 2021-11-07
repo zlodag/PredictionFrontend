@@ -1,4 +1,4 @@
-module Error exposing (graphqlHttpErrorToHtml, responseToHtml)
+module Error exposing (graphqlHttpErrorToHtml, httpErrorToHtml, responseToHtml)
 
 import Dict
 import Graphql.Http
@@ -27,9 +27,28 @@ responseToHtml r =
             goodStatus metadata body
 
 
-graphqlHttpErrorToHtml : Graphql.Http.Error a -> Html msg
-graphqlHttpErrorToHtml e =
-    case e of
+httpErrorToHtml : Graphql.Http.HttpError -> Html msg
+httpErrorToHtml httpError =
+    case httpError of
+        Graphql.Http.BadUrl url ->
+            badUrl url
+
+        Graphql.Http.Timeout ->
+            timeout
+
+        Graphql.Http.NetworkError ->
+            networkError
+
+        Graphql.Http.BadStatus metadata body ->
+            badStatus metadata body
+
+        Graphql.Http.BadPayload error ->
+            badPayload error
+
+
+graphqlHttpErrorToHtml : Graphql.Http.Error () -> Html msg
+graphqlHttpErrorToHtml error =
+    case error of
         Graphql.Http.GraphqlError _ graphqlErrors ->
             div []
                 [ text "GraphqlError"
@@ -37,21 +56,7 @@ graphqlHttpErrorToHtml e =
                 ]
 
         Graphql.Http.HttpError httpError ->
-            case httpError of
-                Graphql.Http.BadUrl url ->
-                    badUrl url
-
-                Graphql.Http.Timeout ->
-                    timeout
-
-                Graphql.Http.NetworkError ->
-                    networkError
-
-                Graphql.Http.BadStatus metadata body ->
-                    badStatus metadata body
-
-                Graphql.Http.BadPayload error ->
-                    badPayload error
+            httpErrorToHtml httpError
 
 
 viewGraphqlError : Graphql.Http.GraphqlError.GraphqlError -> Html msg

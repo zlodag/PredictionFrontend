@@ -8,7 +8,7 @@ import Config exposing (api)
 import Error
 import Graphql.Http
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
-import Html exposing (Html, a, button, dd, div, dl, dt, hr, li, p, text, ul)
+import Html exposing (Html, a, button, dd, div, dl, dt, hr, li, text, ul)
 import Html.Attributes exposing (href, type_)
 import Html.Events exposing (onClick)
 import Http exposing (Error(..), Resolver)
@@ -61,21 +61,21 @@ type alias Model =
 type Auth
     = LoggedOut (Maybe (Html Msg)) Credentials
     | LoggingIn Credentials
-    | LoggedIn UserInfo Data
+    | LoggedIn UserInfo (HtmlRemoteData Data)
+    | RefreshingToken
 
 
 type Data
-    = NoData
-    | Me (HtmlRemoteData MyDetails.Data)
-    | GroupList (HtmlRemoteData GroupListData)
-    | GroupDetail (HtmlRemoteData GroupDetailData)
-    | UserDetail (HtmlRemoteData NamedNodeData)
-    | UserScore (HtmlRemoteData UserScore.Data)
-    | CaseDetail (HtmlRemoteData CaseDetail.Data)
+    = Me MyDetails.Data
+    | GroupList GroupListData
+    | GroupDetail GroupDetailData
+    | UserDetail NamedNodeData
+    | UserScore UserScore.Data
+    | CaseDetail CaseDetail.Data
 
 
 type alias HtmlRemoteData a =
-    RemoteData (Html Msg) a
+    RemoteData (Graphql.Http.Error ()) a
 
 
 type alias GroupListData =
@@ -93,10 +93,12 @@ type Msg
     | LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
     | LoggedInOK UserInfo
-    | DataUpdated Auth
+    | ExpiredToken (UserInfo -> Cmd Msg) UserInfo
+    | RenewedToken (UserInfo -> Cmd Msg) UserInfo
+    | DataUpdated UserInfo (HtmlRemoteData Data)
     | AddComment UserInfo CaseDetail.Data String
     | Login Credentials
-    | Logout
+    | Logout (Maybe (Html Msg)) (Maybe Credentials)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -117,13 +119,65 @@ update msg model =
             parseUrlAndRequest url model
 
         LoggedInOK user ->
-            ( { model | auth = LoggedIn user NoData }
+            ( { model | auth = LoggedIn user NotAsked }
               --, Nav.pushUrl model.key <| userUrl user.id
             , Cmd.none
             )
 
-        DataUpdated auth ->
-            ( { model | auth = auth }, Task.map2 Now Time.here Time.now |> Task.perform NewTime )
+        ExpiredToken sendNewRequest originalUser ->
+            let
+                toMsg : Result Graphql.Http.HttpError UserInfo -> Msg
+                toMsg result =
+                    case result of
+                        Ok newUser ->
+                            RenewedToken sendNewRequest newUser
+
+                        Err error ->
+                            Logout (Just <| Error.httpErrorToHtml error) Nothing
+
+                decoder : D.Decoder UserInfo
+                decoder =
+                    D.map2
+                        (UserInfo originalUser.node)
+                        (D.field "accessToken" D.string)
+                        (D.field "refreshToken" D.string)
+
+                toResult : Http.Response String -> Result Graphql.Http.HttpError UserInfo
+                toResult response =
+                    case response of
+                        Http.BadUrl_ url ->
+                            Err (Graphql.Http.BadUrl url)
+
+                        Http.Timeout_ ->
+                            Err Graphql.Http.Timeout
+
+                        Http.NetworkError_ ->
+                            Err Graphql.Http.NetworkError
+
+                        Http.BadStatus_ metadata body ->
+                            Err (Graphql.Http.BadStatus metadata body)
+
+                        Http.GoodStatus_ _ body ->
+                            case D.decodeString decoder body of
+                                Ok newUser ->
+                                    Ok newUser
+
+                                Err err ->
+                                    Err (Graphql.Http.BadPayload err)
+            in
+            ( { model | auth = RefreshingToken }
+            , Http.post
+                { url = Url.Builder.absolute [ "auth", "refresh" ] []
+                , body = Http.jsonBody <| E.object [ ( "token", E.string originalUser.refreshToken ) ]
+                , expect = Http.expectStringResponse toMsg toResult
+                }
+            )
+
+        RenewedToken sendNewRequest newUser ->
+            ( { model | auth = LoggedIn newUser Loading }, sendNewRequest newUser )
+
+        DataUpdated userInfo data ->
+            ( { model | auth = LoggedIn userInfo data }, Task.map2 Now Time.here Time.now |> Task.perform NewTime )
 
         Login credentials ->
             let
@@ -134,33 +188,23 @@ update msg model =
                             LoggedInOK user
 
                         Err error ->
-                            LoggedOut (Just error) credentials |> DataUpdated
+                            Logout (Just error) (Just credentials)
             in
             ( { model | auth = LoggingIn credentials }
             , Login.login resultToMsg credentials
             )
 
-        Logout ->
-            ( { model | auth = LoggedOut Nothing blankCredentials }
+        Logout err credentials ->
+            ( { model | auth = LoggedOut err <| Maybe.withDefault blankCredentials credentials }
             , Cmd.none
             )
 
         AddComment userInfo data string ->
-            let
-                toData remoteData =
-                    (case remoteData of
-                        Success a ->
-                            CaseDetail.onCommentResult data a
-
-                        _ ->
-                            data
-                    )
-                        |> Success
-                        >> CaseDetail
-            in
-            ( { model | auth = LoggedIn userInfo <| CaseDetail <| Success data }
-            , CaseDetail.addComment data string
-                |> sendRequest toData userInfo
+            ( { model | auth = LoggedIn userInfo <| Success <| CaseDetail data }
+            , sendRequest
+                (CaseDetail.addComment data string)
+                (CaseDetail.onCommentResult data >> CaseDetail >> Success)
+                userInfo
             )
 
 
@@ -189,134 +233,76 @@ parseUrlAndRequest : Url.Url -> Model -> ( Model, Cmd Msg )
 parseUrlAndRequest url model =
     case ( model.auth, Url.Parser.parse routeParser url ) of
         ( LoggedIn userData _, Just Welcome ) ->
-            ( { model | auth = LoggedIn userData NoData }, Cmd.none )
+            ( { model | auth = LoggedIn userData NotAsked }, Cmd.none )
 
         ( _, Just Welcome ) ->
             ( model, Cmd.none )
 
         ( LoggedIn userData _, Just (UserDetailRoute userId) ) ->
             if userId == userData.node.id then
-                ( { model | auth = LoggedIn userData (Me Loading) }
-                , MyDetails.queryRequest userId
-                    |> sendRequest Me userData
-                )
+                MyDetails.queryRequest userId
+                    |> sendDataRequest model userData Me
 
             else
-                ( { model | auth = LoggedIn userData (UserDetail Loading) }
-                , SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name
+                SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name
                     |> Predictions.Query.user { id = userId }
                     |> Graphql.Http.queryRequest api
-                    |> sendRequest UserDetail userData
-                )
+                    |> sendDataRequest model userData UserDetail
 
         ( LoggedIn userData _, Just GroupsRoute ) ->
-            ( { model | auth = LoggedIn userData (GroupList Loading) }
-            , SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name
+            SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name
                 |> Predictions.Object.User.groups
                 |> Predictions.Query.user { id = userData.node.id }
                 |> Graphql.Http.queryRequest api
-                |> sendRequest GroupList userData
-            )
+                |> sendDataRequest model userData GroupList
 
         ( LoggedIn userData _, Just (GroupDetailRoute groupId) ) ->
-            ( { model | auth = LoggedIn userData (GroupDetail Loading) }
-            , SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name
+            SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name
                 |> Predictions.Object.Group.members
                 |> SelectionSet.map2 GroupDetailData (SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name)
                 |> Predictions.Query.group { id = groupId }
                 |> Graphql.Http.queryRequest api
-                |> sendRequest GroupDetail userData
-            )
+                |> sendDataRequest model userData GroupDetail
 
         ( LoggedIn userData _, Just (UserScoreRoute userId) ) ->
-            ( { model | auth = LoggedIn userData (UserScore Loading) }
-            , UserScore.queryRequest userId
-                |> sendRequest UserScore userData
-            )
+            UserScore.queryRequest userId
+                |> sendDataRequest model userData UserScore
 
         ( LoggedIn userData _, Just (CaseDetailRoute caseId) ) ->
-            ( { model | auth = LoggedIn userData (UserScore Loading) }
-            , CaseDetail.queryRequest caseId
-                |> sendRequest CaseDetail userData
-            )
+            CaseDetail.queryRequest caseId
+                |> sendDataRequest model userData CaseDetail
 
         _ ->
             ( model, Nav.pushUrl model.key "/" )
 
 
-sendRequest : (HtmlRemoteData a -> Data) -> UserInfo -> Graphql.Http.Request a -> Cmd Msg
-sendRequest toData originalUser request =
+sendRequest : Graphql.Http.Request a -> (Result (Graphql.Http.Error ()) a -> HtmlRemoteData Data) -> UserInfo -> Cmd Msg
+sendRequest request resultToData user =
     let
-        resultToMessage : Result ( UserInfo, Html Msg ) ( UserInfo, a ) -> Msg
-        resultToMessage result =
-            let
-                ( newUser, remoteData ) =
-                    case result of
-                        Ok ( user, data ) ->
-                            ( user, Success data )
+        handleExpiredToken : Result (Graphql.Http.Error ()) a -> Msg
+        handleExpiredToken result =
+            case result of
+                Err (Graphql.Http.HttpError (Graphql.Http.BadStatus _ apiBody)) ->
+                    case D.decodeString (D.field "error" D.string) apiBody of
+                        Ok "jwt expired" ->
+                            ExpiredToken (sendRequest request resultToData) user
 
-                        Err ( user, errorMsg ) ->
-                            ( user, Failure errorMsg )
-            in
-            remoteData |> toData |> LoggedIn newUser |> DataUpdated
+                        _ ->
+                            DataUpdated user (resultToData result)
+
+                _ ->
+                    DataUpdated user (resultToData result)
     in
-    requestToTask request originalUser
-        |> Task.onError (refreshTokenAndTryAgain request)
-        |> Task.attempt resultToMessage
-
-
-requestToTask : Graphql.Http.Request a -> UserInfo -> Task.Task ( UserInfo, Graphql.Http.Error a ) ( UserInfo, a )
-requestToTask request user =
     request
         |> Graphql.Http.withHeader "Authorization" ("Bearer " ++ user.accessToken)
-        |> Graphql.Http.toTask
-        |> Task.map (Tuple.pair user)
-        |> Task.mapError (Tuple.pair user)
+        |> Graphql.Http.send (Graphql.Http.discardParsedErrorData >> handleExpiredToken)
 
 
-refreshTokenAndTryAgain : Graphql.Http.Request a -> ( UserInfo, Graphql.Http.Error a ) -> Task.Task ( UserInfo, Html Msg ) ( UserInfo, a )
-refreshTokenAndTryAgain request ( originalUser, originalError ) =
-    let
-        onRefresh : Http.Response String -> Result (Html Msg) UserInfo
-        onRefresh response =
-            case response of
-                Http.GoodStatus_ _ body ->
-                    D.decodeString
-                        (D.map2
-                            (UserInfo originalUser.node)
-                            (D.field "accessToken" D.string)
-                            (D.field "refreshToken" D.string)
-                        )
-                        body
-                        |> Result.mapError (D.errorToString >> text)
-
-                _ ->
-                    Err <| Error.responseToHtml response
-
-        fail : Task.Task ( UserInfo, Html Msg ) ( UserInfo, a )
-        fail =
-            Task.fail ( originalUser, Error.graphqlHttpErrorToHtml originalError )
-    in
-    case originalError of
-        Graphql.Http.HttpError (Graphql.Http.BadStatus _ apiBody) ->
-            case D.decodeString (D.field "error" D.string) apiBody of
-                Ok "jwt expired" ->
-                    Http.task
-                        { method = "POST"
-                        , headers = []
-                        , url = Url.Builder.absolute [ "auth", "refresh" ] []
-                        , body = Http.jsonBody <| E.object [ ( "token", E.string originalUser.refreshToken ) ]
-                        , resolver = Http.stringResolver onRefresh
-                        , timeout = Nothing
-                        }
-                        |> Task.mapError (Tuple.pair originalUser)
-                        |> Task.andThen (requestToTask request >> Task.mapError (Tuple.mapSecond Error.graphqlHttpErrorToHtml))
-
-                _ ->
-                    fail
-
-        _ ->
-            fail
+sendDataRequest : Model -> UserInfo -> (a -> Data) -> Graphql.Http.Request a -> ( Model, Cmd Msg )
+sendDataRequest model user toData request =
+    ( { model | auth = LoggedIn user Loading }
+    , sendRequest request (Result.map toData >> RemoteData.fromResult) user
+    )
 
 
 view : Model -> Document Msg
@@ -330,7 +316,7 @@ viewModel : Model -> List (Html Msg)
 viewModel model =
     case model.auth of
         LoggedOut error credentials ->
-            viewSignInForm Login (LoggedOut error >> DataUpdated) False credentials
+            viewSignInForm Login (Just >> Logout error) False credentials
                 :: (case error of
                         Just e ->
                             [ e ]
@@ -340,49 +326,47 @@ viewModel model =
                    )
 
         LoggingIn credentials ->
-            [ viewSignInForm Login (LoggedOut Nothing >> DataUpdated) True credentials ]
+            [ viewSignInForm Login (Just >> Logout Nothing) True credentials ]
 
-        LoggedIn userInfo data ->
+        LoggedIn userInfo remoteData ->
             [ div [] [ text "Welcome, ", displayNamedNode userUrl userInfo.node ]
-            , div [] [ button [ type_ "button", onClick Logout ] [ text "Log out" ] ]
+            , div [] [ button [ type_ "button", onClick <| Logout Nothing Nothing ] [ text "Log out" ] ]
             , hr [] []
             , ul []
                 [ li [] [ a [ href <| Url.Builder.absolute [ "groups" ] [] ] [ text "Groups" ] ]
                 ]
             , hr [] []
-            , displayData model.now userInfo data
+            , displayRemoteData (displayData model.now userInfo) remoteData
             ]
+
+        RefreshingToken ->
+            [ text "Refreshing token..." ]
 
 
 displayData : Now -> UserInfo -> Data -> Html Msg
 displayData now userInfo remoteData =
     case remoteData of
-        NoData ->
-            p [] [ text "Click on a link to begin" ]
-
         Me data ->
-            displayRemoteData (MyDetails.view now) data
+            MyDetails.view now data
 
         GroupList data ->
-            displayRemoteData displayGroupList data
+            displayGroupList data
 
         GroupDetail data ->
-            displayRemoteData displayGroupDetail data
+            displayGroupDetail data
 
         UserDetail data ->
-            displayRemoteData displayUserDetail data
+            displayUserDetail data
 
         UserScore data ->
-            displayRemoteData (UserScore.view (Success >> UserScore >> LoggedIn userInfo >> DataUpdated) now) data
+            UserScore.view (UserScore >> Success >> DataUpdated userInfo) now data
 
         CaseDetail data ->
-            displayRemoteData
-                (CaseDetail.view
-                    (Success >> CaseDetail >> LoggedIn userInfo >> DataUpdated)
-                    (AddComment userInfo)
-                    now
-                    userInfo.node
-                )
+            CaseDetail.view
+                (CaseDetail >> Success >> DataUpdated userInfo)
+                (AddComment userInfo)
+                now
+                userInfo.node
                 data
 
 
@@ -390,13 +374,13 @@ displayRemoteData : (a -> Html Msg) -> HtmlRemoteData a -> Html Msg
 displayRemoteData displayFunction remoteData =
     case remoteData of
         NotAsked ->
-            text "Not asked"
+            text "Ready to go!"
 
         Loading ->
             text "Loading..."
 
-        Failure htmlMsg ->
-            htmlMsg
+        Failure err ->
+            Error.graphqlHttpErrorToHtml err
 
         Success data ->
             displayFunction data
