@@ -22,6 +22,7 @@ import Predictions.Object.User
 import Predictions.Query
 import Predictions.Scalar exposing (Id(..))
 import RemoteData exposing (RemoteData(..))
+import ScalarCodecs exposing (Timestamp)
 import Task
 import Time
 import Url
@@ -100,6 +101,7 @@ type Msg
     | DataUpdated UserInfo (HtmlRemoteData Data)
     | RequestNewList UserInfo CaseList.Data
     | AddComment UserInfo CaseDetail.Data String
+    | ChangeDeadline UserInfo CaseDetail.Data Timestamp
     | Login Credentials
     | Logout (Maybe (Html Msg)) (Maybe Credentials)
 
@@ -207,6 +209,14 @@ update msg model =
             , sendRequest
                 (CaseDetail.addComment data string)
                 (CaseDetail.onCommentResult data >> CaseDetail >> Success)
+                userInfo
+            )
+
+        ChangeDeadline userInfo data deadline ->
+            ( { model | auth = LoggedIn userInfo <| Success <| CaseDetail data }
+            , sendRequest
+                (CaseDetail.changeDeadline data deadline)
+                (CaseDetail.onDeadlineResult data >> CaseDetail >> Success)
                 userInfo
             )
 
@@ -378,6 +388,7 @@ displayData now userInfo remoteData =
         CaseDetail data ->
             CaseDetail.view
                 (CaseDetail >> Success >> DataUpdated userInfo)
+                (ChangeDeadline userInfo)
                 (AddComment userInfo)
                 now
                 userInfo.node

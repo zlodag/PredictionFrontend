@@ -57,17 +57,15 @@ updateField field inputValue =
 
 
 displayValidity : Field a -> Html msg
-displayValidity field =
+displayValidity (Field fieldData) =
     let
         ( backgroundColor, validationText ) =
-            case field of
-                Field fieldData ->
-                    case fieldData.value of
-                        Ok _ ->
-                            ( "green", "✓" )
+            case fieldData.value of
+                Ok _ ->
+                    ( "green", "✓" )
 
-                        Err error ->
-                            ( "red", "✗ " ++ error )
+                Err error ->
+                    ( "red", "✗ " ++ error )
     in
     span [ style "background-color" backgroundColor, style "color" "white" ] [ text validationText ]
 

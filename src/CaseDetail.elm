@@ -1,4 +1,4 @@
-module CaseDetail exposing (Data, addComment, onCommentResult, queryRequest, view)
+module CaseDetail exposing (Data, addComment, changeDeadline, onCommentResult, onDeadlineResult, queryRequest, view)
 
 import Common exposing (NamedNodeData, Now, caseUrl, displayListItems, displayNamedNode, displayTime, groupUrl, userUrl)
 import Config exposing (api)
@@ -127,8 +127,8 @@ mapToComment =
         Predictions.Object.Comment.text
 
 
-view : (Data -> msg) -> (Data -> String -> msg) -> Now -> NamedNodeData -> Data -> Html msg
-view dataUpdated addCommentMsg now currentUser (Data state case_) =
+view : (Data -> msg) -> (Data -> Timestamp -> msg) -> (Data -> String -> msg) -> Now -> NamedNodeData -> Data -> Html msg
+view dataUpdated changeDeadlineMsg addCommentMsg now currentUser (Data state case_) =
     let
         changeState s =
             Data s case_ |> dataUpdated
@@ -139,9 +139,6 @@ view dataUpdated addCommentMsg now currentUser (Data state case_) =
         viewDeadline =
             displayTime now case_.deadline
 
-        --submitDeadline : Timestamp -> msg
-        --submitDeadline deadline =
-        --    Predictions.Mutation.addComment {case_.}
         displayDeadline : Html msg
         displayDeadline =
             case state of
@@ -150,14 +147,14 @@ view dataUpdated addCommentMsg now currentUser (Data state case_) =
                         ( submitButtonDisabled, formAttributes ) =
                             case FormField.getValue newDeadline of
                                 Ok deadline ->
-                                    --( False, [ onSubmit <| submitDeadline deadline ] )
-                                    ( False, [] )
+                                    ( False, [ onSubmit <| changeDeadlineMsg (Data state case_) deadline ] )
 
                                 Err _ ->
                                     ( True, [] )
                     in
                     form formAttributes
                         [ input [ type_ "datetime-local", FormField.withValue newDeadline, FormField.onInput (ChangingDeadline >> changeState) newDeadline ] []
+                        , FormField.displayValidity newDeadline
                         , div []
                             [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
                             , cancelEditButton
@@ -422,10 +419,38 @@ addComment (Data _ case_) text =
 
 
 onCommentResult : Data -> Result (Graphql.Http.Error ()) Comment -> Data
-onCommentResult (Data state case_) c =
-    case c of
+onCommentResult (Data state case_) result =
+    case result of
         Ok comment ->
             Data Viewing { case_ | comments = case_.comments ++ [ comment ] }
+
+        Err error ->
+            Data
+                (AddingComment
+                    (case state of
+                        AddingComment input _ ->
+                            input
+
+                        _ ->
+                            newCommentInput
+                    )
+                 <|
+                    Just error
+                )
+                case_
+
+
+changeDeadline : Data -> Timestamp -> Graphql.Http.Request Timestamp
+changeDeadline (Data _ case_) deadline =
+    Predictions.Mutation.changeDeadline { caseId = case_.node.id, newDeadline = deadline }
+        |> Graphql.Http.mutationRequest api
+
+
+onDeadlineResult : Data -> Result (Graphql.Http.Error ()) Timestamp -> Data
+onDeadlineResult (Data state case_) result =
+    case result of
+        Ok deadline ->
+            Data Viewing { case_ | deadline = deadline }
 
         Err error ->
             Data
