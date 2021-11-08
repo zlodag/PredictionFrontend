@@ -1,14 +1,15 @@
-module CaseDetail exposing (Data, addComment, changeDeadline, onCommentResult, onDeadlineResult, queryRequest, view)
+module CaseDetail exposing (Data, addComment, changeDeadline, changeGroup, fetchGroups, onChangeGroupResult, onCommentResult, onDeadlineResult, onGroupsResult, queryRequest, view)
 
 import Common exposing (NamedNodeData, Now, caseUrl, displayListItems, displayNamedNode, displayTime, groupUrl, userUrl)
 import Config exposing (api)
 import Error
 import FormField exposing (Field)
 import Graphql.Http
+import Graphql.OptionalArgument
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
-import Html exposing (Html, b, blockquote, button, dd, div, dl, dt, form, input, li, text, ul)
-import Html.Attributes exposing (disabled, placeholder, type_)
-import Html.Events exposing (onClick, onSubmit)
+import Html exposing (Html, b, blockquote, button, dd, div, dl, dt, form, input, li, option, select, text, ul)
+import Html.Attributes exposing (disabled, placeholder, selected, type_, value)
+import Html.Events exposing (onClick, onInput, onSubmit)
 import Predictions.Enum.Outcome
 import Predictions.Mutation
 import Predictions.Object
@@ -20,6 +21,7 @@ import Predictions.Object.Judgement
 import Predictions.Object.User
 import Predictions.Object.Wager
 import Predictions.Query
+import Predictions.Scalar exposing (Id(..))
 import ScalarCodecs exposing (Id, Timestamp)
 
 
@@ -30,7 +32,7 @@ type Data
 type State
     = Viewing
     | ChangingDeadline (Field Timestamp)
-      --| ChangingGroup (List NamedNodeData)
+    | ChangingGroup (List NamedNodeData)
       --| AddingDiagnosis PredictionData
       --| AddingWager Id (Field Int)
       --| Judging Id
@@ -127,8 +129,8 @@ mapToComment =
         Predictions.Object.Comment.text
 
 
-view : (Data -> msg) -> (Data -> Timestamp -> msg) -> (Data -> String -> msg) -> Now -> NamedNodeData -> Data -> Html msg
-view dataUpdated changeDeadlineMsg addCommentMsg now currentUser (Data state case_) =
+view : (Data -> msg) -> (Data -> msg) -> (Data -> Maybe Id -> msg) -> (Data -> Timestamp -> msg) -> (Data -> String -> msg) -> Now -> NamedNodeData -> Data -> Html msg
+view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg addCommentMsg now currentUser (Data state case_) =
     let
         changeState s =
             Data s case_ |> dataUpdated
@@ -170,21 +172,57 @@ view dataUpdated changeDeadlineMsg addCommentMsg now currentUser (Data state cas
                 _ ->
                     viewDeadline
 
+        privateGroupName =
+            "(Private)"
+
         viewGroup =
-            case_.group |> Maybe.map (displayNamedNode groupUrl) |> Maybe.withDefault (text "None")
+            case_.group |> Maybe.map (displayNamedNode groupUrl) |> Maybe.withDefault (text privateGroupName)
 
         displayCaseGroup =
             case state of
-                --ChangingGroup groups ->
-                --    div []
-                --        [ div [] [ displayGroupSelect groupId groups <| SubmitGroup caseDetail ]
-                --        , div [] [ cancelEditButton caseDetail ]
-                --        ]
-                --Viewing ->
-                --    div []
-                --        [ div [] [viewGroup]
-                --        , div [] [ button [ onClick <| changeCase { caseDetail | state = ChangingGroup user.groups } ] [ text "Change" ] ]
-                --        ]
+                ChangingGroup groups ->
+                    let
+                        private =
+                            "_private"
+
+                        onChangeGroup : String -> msg
+                        onChangeGroup value =
+                            changeGroupMsg (Data state case_) <|
+                                if value == private then
+                                    Nothing
+
+                                else
+                                    Just <| Id value
+
+                        mapToOption : NamedNodeData -> Html msg
+                        mapToOption group =
+                            case group.id of
+                                Id groupId ->
+                                    let
+                                        s =
+                                            case case_.group of
+                                                Just g ->
+                                                    case g.id of
+                                                        Id id ->
+                                                            id == groupId
+
+                                                Nothing ->
+                                                    False
+                                    in
+                                    option [ value groupId, selected s ] [ text group.name ]
+                    in
+                    div []
+                        --[ div [] [ displayGroupSelect groupId groups <| SubmitGroup caseDetail ]
+                        [ select [ onInput onChangeGroup ] <| option [ value private, selected (case_.group == Nothing) ] [ text privateGroupName ] :: List.map mapToOption groups
+                        , div [] [ cancelEditButton ]
+                        ]
+
+                Viewing ->
+                    div []
+                        [ div [] [ viewGroup ]
+                        , div [] [ button [ onClick << fetchGroupsMsg <| Data (ChangingGroup []) case_ ] [ text "Change" ] ]
+                        ]
+
                 _ ->
                     viewGroup
 
@@ -405,6 +443,44 @@ view dataUpdated changeDeadlineMsg addCommentMsg now currentUser (Data state cas
         , dt [] [ text <| "Tags (" ++ String.fromInt (List.length case_.tags) ++ ")" ]
         , dd [] [ ul [] <| List.map (text >> List.singleton >> li []) case_.tags ]
         ]
+
+
+fetchGroups : Id -> Graphql.Http.Request (List NamedNodeData)
+fetchGroups userId =
+    SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name
+        |> Predictions.Object.User.groups
+        |> Predictions.Query.user { id = userId }
+        |> Graphql.Http.queryRequest api
+
+
+onGroupsResult : Data -> Result (Graphql.Http.Error ()) (List NamedNodeData) -> Data
+onGroupsResult (Data _ case_) result =
+    case result of
+        Ok groups ->
+            Data (ChangingGroup groups) case_
+
+        Err _ ->
+            Data Viewing case_
+
+
+changeGroup : Data -> Maybe Id -> Graphql.Http.Request (Maybe NamedNodeData)
+changeGroup (Data _ case_) id =
+    Predictions.Mutation.changeGroup
+        (\args -> { args | newGroupId = Graphql.OptionalArgument.fromMaybeWithNull id })
+        { caseId = case_.node.id }
+        (SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name)
+        |> Graphql.Http.mutationRequest api
+
+
+onChangeGroupResult : Data -> Result (Graphql.Http.Error ()) (Maybe NamedNodeData) -> Data
+onChangeGroupResult (Data _ case_) result =
+    Data Viewing <|
+        case result of
+            Ok group ->
+                { case_ | group = group }
+
+            Err _ ->
+                case_
 
 
 newCommentInput : Field String

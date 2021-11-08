@@ -100,6 +100,8 @@ type Msg
     | RenewedToken (UserInfo -> Cmd Msg) UserInfo
     | DataUpdated UserInfo (HtmlRemoteData Data)
     | RequestNewList UserInfo CaseList.Data
+    | FetchGroups UserInfo CaseDetail.Data
+    | ChangeGroup UserInfo CaseDetail.Data (Maybe Id)
     | AddComment UserInfo CaseDetail.Data String
     | ChangeDeadline UserInfo CaseDetail.Data Timestamp
     | Login Credentials
@@ -202,6 +204,22 @@ update msg model =
         Logout err credentials ->
             ( { model | auth = LoggedOut err <| Maybe.withDefault blankCredentials credentials }
             , Cmd.none
+            )
+
+        FetchGroups userInfo data ->
+            ( { model | auth = LoggedIn userInfo <| Success <| CaseDetail data }
+            , sendRequest
+                (CaseDetail.fetchGroups userInfo.node.id)
+                (CaseDetail.onGroupsResult data >> CaseDetail >> Success)
+                userInfo
+            )
+
+        ChangeGroup userInfo data id ->
+            ( { model | auth = LoggedIn userInfo <| Success <| CaseDetail data }
+            , sendRequest
+                (CaseDetail.changeGroup data id)
+                (CaseDetail.onChangeGroupResult data >> CaseDetail >> Success)
+                userInfo
             )
 
         AddComment userInfo data string ->
@@ -388,6 +406,8 @@ displayData now userInfo remoteData =
         CaseDetail data ->
             CaseDetail.view
                 (CaseDetail >> Success >> DataUpdated userInfo)
+                (FetchGroups userInfo)
+                (ChangeGroup userInfo)
                 (ChangeDeadline userInfo)
                 (AddComment userInfo)
                 now
