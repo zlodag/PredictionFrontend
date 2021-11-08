@@ -3,6 +3,7 @@ module Main exposing (main)
 import Browser exposing (Document)
 import Browser.Navigation as Nav
 import CaseDetail
+import CaseList
 import Common exposing (NamedNodeData, Now, UserInfo, displayNamedNode, groupUrl, userUrl)
 import Config exposing (api)
 import Error
@@ -69,9 +70,10 @@ type Data
     = Me MyDetails.Data
     | GroupList GroupListData
     | GroupDetail GroupDetailData
+    | CaseList CaseList.Data
+    | CaseDetail CaseDetail.Data
     | UserDetail NamedNodeData
     | UserScore UserScore.Data
-    | CaseDetail CaseDetail.Data
 
 
 type alias HtmlRemoteData a =
@@ -96,6 +98,7 @@ type Msg
     | ExpiredToken (UserInfo -> Cmd Msg) UserInfo
     | RenewedToken (UserInfo -> Cmd Msg) UserInfo
     | DataUpdated UserInfo (HtmlRemoteData Data)
+    | RequestNewList UserInfo CaseList.Data
     | AddComment UserInfo CaseDetail.Data String
     | Login Credentials
     | Logout (Maybe (Html Msg)) (Maybe Credentials)
@@ -207,6 +210,10 @@ update msg model =
                 userInfo
             )
 
+        RequestNewList userInfo data ->
+            CaseList.queryRequest data
+                |> sendDataRequest model userInfo CaseList
+
 
 type Route
     = Welcome
@@ -214,6 +221,7 @@ type Route
     | UserScoreRoute Id
     | GroupsRoute
     | GroupDetailRoute Id
+    | CasesRoute
     | CaseDetailRoute Id
 
 
@@ -223,9 +231,10 @@ routeParser =
         [ map Welcome top
         , map GroupsRoute <| s "groups"
         , map (GroupDetailRoute << Id) <| s "groups" </> string
+        , map CasesRoute <| s "cases"
+        , map (CaseDetailRoute << Id) <| s "cases" </> string
         , map (UserDetailRoute << Id) <| s "users" </> string
         , map (UserScoreRoute << Id) <| s "users" </> string </> s "score"
-        , map (CaseDetailRoute << Id) <| s "cases" </> string
         ]
 
 
@@ -264,13 +273,17 @@ parseUrlAndRequest url model =
                 |> Graphql.Http.queryRequest api
                 |> sendDataRequest model userData GroupDetail
 
-        ( LoggedIn userData _, Just (UserScoreRoute userId) ) ->
-            UserScore.queryRequest userId
-                |> sendDataRequest model userData UserScore
+        ( LoggedIn userData _, Just CasesRoute ) ->
+            CaseList.initialQuery userData.node.id
+                |> sendDataRequest model userData CaseList
 
         ( LoggedIn userData _, Just (CaseDetailRoute caseId) ) ->
             CaseDetail.queryRequest caseId
                 |> sendDataRequest model userData CaseDetail
+
+        ( LoggedIn userData _, Just (UserScoreRoute userId) ) ->
+            UserScore.queryRequest userId
+                |> sendDataRequest model userData UserScore
 
         _ ->
             ( model, Nav.pushUrl model.key "/" )
@@ -334,6 +347,7 @@ viewModel model =
             , hr [] []
             , ul []
                 [ li [] [ a [ href <| Url.Builder.absolute [ "groups" ] [] ] [ text "Groups" ] ]
+                , li [] [ a [ href <| Url.Builder.absolute [ "cases" ] [] ] [ text "Cases" ] ]
                 ]
             , hr [] []
             , displayRemoteData (displayData model.now userInfo) remoteData
@@ -349,17 +363,17 @@ displayData now userInfo remoteData =
         Me data ->
             MyDetails.view now data
 
+        UserDetail data ->
+            displayUserDetail data
+
         GroupList data ->
             displayGroupList data
 
         GroupDetail data ->
             displayGroupDetail data
 
-        UserDetail data ->
-            displayUserDetail data
-
-        UserScore data ->
-            UserScore.view (UserScore >> Success >> DataUpdated userInfo) now data
+        CaseList data ->
+            CaseList.view (RequestNewList userInfo) data
 
         CaseDetail data ->
             CaseDetail.view
@@ -368,6 +382,9 @@ displayData now userInfo remoteData =
                 now
                 userInfo.node
                 data
+
+        UserScore data ->
+            UserScore.view (UserScore >> Success >> DataUpdated userInfo) now data
 
 
 displayRemoteData : (a -> Html Msg) -> HtmlRemoteData a -> Html Msg
@@ -389,7 +406,7 @@ displayRemoteData displayFunction remoteData =
 displayGroupList : GroupListData -> Html Msg
 displayGroupList groups =
     dl []
-        [ dt [] [ text <| "Groups: " ++ (String.fromInt <| List.length groups) ]
+        [ dt [] [ text <| "Groups (" ++ (String.fromInt <| List.length groups) ++ ")" ]
         , dd [] [ ul [] <| List.map (displayNamedNode groupUrl >> List.singleton >> li []) groups ]
         ]
 
