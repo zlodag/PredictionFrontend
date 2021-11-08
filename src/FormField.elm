@@ -1,4 +1,4 @@
-module FormField exposing (Field, displayValidity, getValue, newField, newNonEmptyStringField, onInput, validateDeadline, withValue)
+module FormField exposing (Field, displayValidity, getValue, newField, newNonEmptyStringField, onInput, validateConfidence, validateDeadline, withValue)
 
 import Html exposing (Attribute, Html, span, text)
 import Html.Attributes exposing (style, value)
@@ -29,6 +29,23 @@ getValue field =
 newField : (String -> Result String a) -> Field a
 newField validator =
     Field <| FieldData "" (validator "") validator
+
+
+validateConfidence : String -> Result String Int
+validateConfidence confidence =
+    case String.toInt confidence of
+        Just a ->
+            if a < 0 then
+                Err "Minimum confidence is 0%"
+
+            else if a > 100 then
+                Err "Maximum confidence is 100%"
+
+            else
+                Ok a
+
+        Nothing ->
+            Err "Enter an integer from 0 to 100"
 
 
 newNonEmptyStringField : String -> Field String

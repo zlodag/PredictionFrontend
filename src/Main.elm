@@ -17,6 +17,7 @@ import Json.Decode as D
 import Json.Encode as E
 import Login exposing (Credentials, blankCredentials, viewSignInForm)
 import MyDetails
+import Predictions.Enum.Outcome exposing (Outcome)
 import Predictions.Object.Group
 import Predictions.Object.User
 import Predictions.Query
@@ -95,6 +96,8 @@ type Msg
     = NewTime Now
     | LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
+    | Login Credentials
+    | Logout (Maybe (Html Msg)) (Maybe Credentials)
     | LoggedInOK UserInfo
     | ExpiredToken (UserInfo -> Cmd Msg) UserInfo
     | RenewedToken (UserInfo -> Cmd Msg) UserInfo
@@ -102,14 +105,25 @@ type Msg
     | RequestNewList UserInfo CaseList.Data
     | FetchGroups UserInfo CaseDetail.Data
     | ChangeGroup UserInfo CaseDetail.Data (Maybe Id)
-    | AddComment UserInfo CaseDetail.Data String
     | ChangeDeadline UserInfo CaseDetail.Data Timestamp
-    | Login Credentials
-    | Logout (Maybe (Html Msg)) (Maybe Credentials)
+    | SubmitDiagnosis UserInfo CaseDetail.Data String Int
+    | SubmitWager UserInfo CaseDetail.Data Id Int
+    | JudgeOutcome UserInfo CaseDetail.Data Id Outcome
+    | AddComment UserInfo CaseDetail.Data String
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
+    let
+        caseDetailHelper : UserInfo -> CaseDetail.Data -> (CaseDetail.Data -> Result (Graphql.Http.Error ()) a -> CaseDetail.Data) -> Graphql.Http.Request a -> ( Model, Cmd Msg )
+        caseDetailHelper userInfo data onResult request =
+            ( { model | auth = LoggedIn userInfo <| Success <| CaseDetail data }
+            , sendRequest
+                request
+                (onResult data >> CaseDetail >> Success)
+                userInfo
+            )
+    in
     case msg of
         NewTime now ->
             ( { model | now = now }, Cmd.none )
@@ -124,6 +138,26 @@ update msg model =
 
         UrlChanged url ->
             parseUrlAndRequest url model
+
+        Login credentials ->
+            let
+                resultToMsg : Result (Html Msg) UserInfo -> Msg
+                resultToMsg result =
+                    case result of
+                        Ok user ->
+                            LoggedInOK user
+
+                        Err error ->
+                            Logout (Just error) (Just credentials)
+            in
+            ( { model | auth = LoggingIn credentials }
+            , Login.login resultToMsg credentials
+            )
+
+        Logout err credentials ->
+            ( { model | auth = LoggedOut err <| Maybe.withDefault blankCredentials credentials }
+            , Cmd.none
+            )
 
         LoggedInOK user ->
             ( { model | auth = LoggedIn user NotAsked }
@@ -186,61 +220,37 @@ update msg model =
         DataUpdated userInfo data ->
             ( { model | auth = LoggedIn userInfo data }, Task.map2 Now Time.here Time.now |> Task.perform NewTime )
 
-        Login credentials ->
-            let
-                resultToMsg : Result (Html Msg) UserInfo -> Msg
-                resultToMsg result =
-                    case result of
-                        Ok user ->
-                            LoggedInOK user
-
-                        Err error ->
-                            Logout (Just error) (Just credentials)
-            in
-            ( { model | auth = LoggingIn credentials }
-            , Login.login resultToMsg credentials
-            )
-
-        Logout err credentials ->
-            ( { model | auth = LoggedOut err <| Maybe.withDefault blankCredentials credentials }
-            , Cmd.none
-            )
-
-        FetchGroups userInfo data ->
-            ( { model | auth = LoggedIn userInfo <| Success <| CaseDetail data }
-            , sendRequest
-                (CaseDetail.fetchGroups userInfo.node.id)
-                (CaseDetail.onGroupsResult data >> CaseDetail >> Success)
-                userInfo
-            )
-
-        ChangeGroup userInfo data id ->
-            ( { model | auth = LoggedIn userInfo <| Success <| CaseDetail data }
-            , sendRequest
-                (CaseDetail.changeGroup data id)
-                (CaseDetail.onChangeGroupResult data >> CaseDetail >> Success)
-                userInfo
-            )
-
-        AddComment userInfo data string ->
-            ( { model | auth = LoggedIn userInfo <| Success <| CaseDetail data }
-            , sendRequest
-                (CaseDetail.addComment data string)
-                (CaseDetail.onCommentResult data >> CaseDetail >> Success)
-                userInfo
-            )
-
-        ChangeDeadline userInfo data deadline ->
-            ( { model | auth = LoggedIn userInfo <| Success <| CaseDetail data }
-            , sendRequest
-                (CaseDetail.changeDeadline data deadline)
-                (CaseDetail.onDeadlineResult data >> CaseDetail >> Success)
-                userInfo
-            )
-
         RequestNewList userInfo data ->
             CaseList.queryRequest data
                 |> sendDataRequest model userInfo CaseList
+
+        FetchGroups userInfo data ->
+            CaseDetail.fetchGroups userInfo.node.id
+                |> caseDetailHelper userInfo data CaseDetail.onFetchGroupsResult
+
+        ChangeGroup userInfo data group ->
+            CaseDetail.changeGroup data group
+                |> caseDetailHelper userInfo data CaseDetail.onChangeGroupResult
+
+        ChangeDeadline userInfo data deadline ->
+            CaseDetail.changeDeadline data deadline
+                |> caseDetailHelper userInfo data CaseDetail.onChangeDeadlineResult
+
+        SubmitDiagnosis userInfo data diagnosis confidence ->
+            CaseDetail.submitDiagnosis data diagnosis confidence
+                |> caseDetailHelper userInfo data CaseDetail.onSubmitDiagnosisResult
+
+        SubmitWager userInfo data diagnosisId confidence ->
+            CaseDetail.submitWager diagnosisId confidence
+                |> caseDetailHelper userInfo data (CaseDetail.onSubmitWagerResult diagnosisId)
+
+        JudgeOutcome userInfo data diagnosisId outcome ->
+            CaseDetail.judgeOutcome diagnosisId outcome
+                |> caseDetailHelper userInfo data (CaseDetail.onJudgeOutcomeResult diagnosisId)
+
+        AddComment userInfo data comment ->
+            CaseDetail.addComment data comment
+                |> caseDetailHelper userInfo data CaseDetail.onAddCommentResult
 
 
 type Route
@@ -409,6 +419,9 @@ displayData now userInfo remoteData =
                 (FetchGroups userInfo)
                 (ChangeGroup userInfo)
                 (ChangeDeadline userInfo)
+                (SubmitDiagnosis userInfo)
+                (SubmitWager userInfo)
+                (JudgeOutcome userInfo)
                 (AddComment userInfo)
                 now
                 userInfo.node

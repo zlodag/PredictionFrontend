@@ -1,16 +1,15 @@
-module CaseDetail exposing (Data, addComment, changeDeadline, changeGroup, fetchGroups, onChangeGroupResult, onCommentResult, onDeadlineResult, onGroupsResult, queryRequest, view)
+module CaseDetail exposing (Data, addComment, changeDeadline, changeGroup, fetchGroups, judgeOutcome, onAddCommentResult, onChangeDeadlineResult, onChangeGroupResult, onFetchGroupsResult, onJudgeOutcomeResult, onSubmitDiagnosisResult, onSubmitWagerResult, queryRequest, submitDiagnosis, submitWager, view)
 
-import Common exposing (NamedNodeData, Now, caseUrl, displayListItems, displayNamedNode, displayTime, groupUrl, userUrl)
+import Common exposing (NamedNodeData, Now, caseUrl, displayListItems, displayNamedNode, displayOutcome, displayTime, groupUrl, userUrl)
 import Config exposing (api)
-import Error
-import FormField exposing (Field)
+import FormField
 import Graphql.Http
-import Graphql.OptionalArgument
+import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
-import Html exposing (Html, b, blockquote, button, dd, div, dl, dt, form, input, li, option, select, text, ul)
-import Html.Attributes exposing (disabled, placeholder, selected, type_, value)
+import Html exposing (Html, b, blockquote, button, dd, div, dl, dt, form, h4, input, li, option, select, strong, text, ul)
+import Html.Attributes exposing (disabled, placeholder, selected, step, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
-import Predictions.Enum.Outcome
+import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.Mutation
 import Predictions.Object
 import Predictions.Object.Case
@@ -31,12 +30,12 @@ type Data
 
 type State
     = Viewing
-    | ChangingDeadline (Field Timestamp)
+    | ChangingDeadline (FormField.Field Timestamp)
     | ChangingGroup (List NamedNodeData)
-      --| AddingDiagnosis PredictionData
-      --| AddingWager Id (Field Int)
-      --| Judging Id
-    | AddingComment (Field String) (Maybe (Graphql.Http.Error ()))
+    | AddingDiagnosis (FormField.Field String) (FormField.Field Int)
+    | AddingWager Id (FormField.Field Int)
+    | Judging Id
+    | AddingComment (FormField.Field String)
 
 
 type alias Case =
@@ -58,7 +57,8 @@ type alias Diagnosis =
 
 
 type alias Wager =
-    { creator : NamedNodeData
+    { id : Id
+    , creator : NamedNodeData
     , confidence : Int
     , timestamp : Timestamp
     }
@@ -107,7 +107,8 @@ mapToDiagnosis =
 
 mapToWager : SelectionSet Wager Predictions.Object.Wager
 mapToWager =
-    SelectionSet.map3 Wager
+    SelectionSet.map4 Wager
+        Predictions.Object.Wager.id
         (Predictions.Object.Wager.creator <| SelectionSet.map2 NamedNodeData Predictions.Object.User.id Predictions.Object.User.name)
         Predictions.Object.Wager.confidence
         Predictions.Object.Wager.timestamp
@@ -129,8 +130,20 @@ mapToComment =
         Predictions.Object.Comment.text
 
 
-view : (Data -> msg) -> (Data -> msg) -> (Data -> Maybe Id -> msg) -> (Data -> Timestamp -> msg) -> (Data -> String -> msg) -> Now -> NamedNodeData -> Data -> Html msg
-view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg addCommentMsg now currentUser (Data state case_) =
+view :
+    (Data -> msg)
+    -> (Data -> msg)
+    -> (Data -> Maybe Id -> msg)
+    -> (Data -> Timestamp -> msg)
+    -> (Data -> String -> Int -> msg)
+    -> (Data -> Id -> Int -> msg)
+    -> (Data -> Id -> Outcome -> msg)
+    -> (Data -> String -> msg)
+    -> Now
+    -> NamedNodeData
+    -> Data
+    -> Html msg
+view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg submitDiagnosisMsg submitWagerMsg judgeOutcomeMsg addCommentMsg now currentUser (Data state case_) =
     let
         changeState s =
             Data s case_ |> dataUpdated
@@ -212,16 +225,19 @@ view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg addCommentMsg n
                                     option [ value groupId, selected s ] [ text group.name ]
                     in
                     div []
-                        --[ div [] [ displayGroupSelect groupId groups <| SubmitGroup caseDetail ]
                         [ select [ onInput onChangeGroup ] <| option [ value private, selected (case_.group == Nothing) ] [ text privateGroupName ] :: List.map mapToOption groups
                         , div [] [ cancelEditButton ]
                         ]
 
                 Viewing ->
-                    div []
-                        [ div [] [ viewGroup ]
-                        , div [] [ button [ onClick << fetchGroupsMsg <| Data (ChangingGroup []) case_ ] [ text "Change" ] ]
-                        ]
+                    if currentUser.id == case_.creator.id then
+                        div []
+                            [ div [] [ viewGroup ]
+                            , div [] [ button [ onClick << fetchGroupsMsg <| Data (ChangingGroup []) case_ ] [ text "Change" ] ]
+                            ]
+
+                    else
+                        viewGroup
 
                 _ ->
                     viewGroup
@@ -236,146 +252,141 @@ view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg addCommentMsg n
 
         displayDiagnosis : Diagnosis -> List (Html msg)
         displayDiagnosis diagnosis =
-            [ text <| "The diagnosis is " ++ diagnosis.node.name ]
+            let
+                judgedAsBy outcome judgedBy =
+                    [ text " Judged as " ] ++ outcome ++ [ text " by ", displayNamedNode userUrl judgedBy ]
+            in
+            [ h4 [] [ text diagnosis.node.name ]
+            , ul [] <|
+                displayListItems displayWager diagnosis.wagers
+                    ++ (case diagnosis.judgement of
+                            Just judgementData ->
+                                judgedAsBy [ strong [] [ text <| displayOutcome judgementData.outcome ] ] judgementData.judgedBy
+                                    ++ [ displayTime now judgementData.timestamp ]
+                                    |> li []
+                                    |> List.singleton
 
-        --let
-        --    judgedAsBy outcome judgedBy =
-        --        [ text " Judged as " ] ++ outcome ++ [ text " by ", displayNamedNode userUrl judgedBy ]
-        --in
-        --[ h4 [] [ text diagnosis.node.name ]
-        --, ul [] <|
-        --    displayListItems (displayWager) diagnosis.wagers
-        --        ++ (case diagnosis.judgement of
-        --                Just judgementData ->
-        --                    judgedAsBy [ strong [] [ text <| displayOutcome judgementData.outcome ] ] judgementData.judgedBy
-        --                        ++ [ displayTime now judgementData.timestamp ]
-        --                        |> li []
-        --                        |> List.singleton
-        --
-        --                Nothing ->
-        --                    let
-        --                        changeWager : Field Int -> Msg
-        --                        changeWager field =
-        --                            changeCase { caseDetail | state = AddingWager diagnosis.node.id field }
-        --                    in
-        --                    case state of
-        --                        Viewing ->
-        --                            (if List.any (\wager -> wager.creator.id == user.node.id) diagnosis.wagers then
-        --                                []
-        --
-        --                             else
-        --                                [ button
-        --                                    [ type_ "button", onClick <| changeWager <| FormField.newField validateConfidence ]
-        --                                    [ text "Add wager" ]
-        --                                ]
-        --                            )
-        --                                ++ [ button
-        --                                        [ type_ "button", onClick <| changeCase { caseDetail | state = Judging diagnosis.node.id } ]
-        --                                        [ text "Judge" ]
-        --                                   ]
-        --                                |> li []
-        --                                |> List.singleton
-        --
-        --                        Judging id ->
-        --                            let
-        --                                judgeOutcomeButton outcome label =
-        --                                    button [ type_ "button", onClick <| SubmitJudgement caseDetail user.node.id diagnosis.node.id outcome ] [ text label ]
-        --                            in
-        --                            if id == diagnosis.node.id then
-        --                                judgedAsBy [ judgeOutcomeButton Right "Right", judgeOutcomeButton Wrong "Wrong", judgeOutcomeButton Indeterminate "Indeterminate" ]
-        --                                    user.node
-        --                                    ++ [ div [] [ cancelEditButton caseDetail ] ]
-        --                                    |> li []
-        --                                    |> List.singleton
-        --
-        --                            else
-        --                                []
-        --
-        --                        AddingWager id newWager ->
-        --                            let
-        --                                ( submitButtonDisabled, formAttributes ) =
-        --                                    case FormField.getValue newWager of
-        --                                        Ok confidence ->
-        --                                            ( False, [ onSubmit <| SubmitWager caseDetail user.node.id diagnosis.node.id confidence ] )
-        --
-        --                                        Err _ ->
-        --                                            ( True, [] )
-        --                            in
-        --                            if id == diagnosis.node.id then
-        --                                [ form formAttributes
-        --                                    [ displayNamedNodeLink "/user" user.node
-        --                                    , text " estimated "
-        --                                    , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue newWager, FormField.onInput changeWager newWager ] []
-        --                                    , text "%"
-        --                                    , div []
-        --                                        [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
-        --                                        , cancelEditButton caseDetail
-        --                                        ]
-        --                                    ]
-        --                                ]
-        --                                    |> li []
-        --                                    |> List.singleton
-        --
-        --                            else
-        --                                []
-        --
-        --                        _ ->
-        --                            []
-        --           )
-        --]
+                            Nothing ->
+                                let
+                                    changeWager : FormField.Field Int -> msg
+                                    changeWager field =
+                                        changeState <| AddingWager diagnosis.node.id field
+                                in
+                                case state of
+                                    Viewing ->
+                                        (if List.any (\wager -> wager.creator.id == currentUser.id) diagnosis.wagers then
+                                            []
+
+                                         else
+                                            [ button
+                                                [ type_ "button", onClick <| changeWager <| FormField.newField FormField.validateConfidence ]
+                                                [ text "Add wager" ]
+                                            ]
+                                        )
+                                            ++ [ button
+                                                    [ type_ "button", onClick <| changeState <| Judging diagnosis.node.id ]
+                                                    [ text "Judge" ]
+                                               ]
+                                            |> li []
+                                            |> List.singleton
+
+                                    Judging id ->
+                                        if id == diagnosis.node.id then
+                                            let
+                                                judgeOutcomeButton outcome label =
+                                                    button [ type_ "button", onClick <| judgeOutcomeMsg (Data state case_) diagnosis.node.id outcome ] [ text label ]
+                                            in
+                                            judgedAsBy [ judgeOutcomeButton Right "Right", judgeOutcomeButton Wrong "Wrong", judgeOutcomeButton Indeterminate "Indeterminate" ]
+                                                currentUser
+                                                ++ [ div [] [ cancelEditButton ] ]
+                                                |> li []
+                                                |> List.singleton
+
+                                        else
+                                            []
+
+                                    AddingWager id newWager ->
+                                        if id == diagnosis.node.id then
+                                            let
+                                                ( submitButtonDisabled, formAttributes ) =
+                                                    case FormField.getValue newWager of
+                                                        Ok confidence ->
+                                                            ( False, [ onSubmit <| submitWagerMsg (Data state case_) diagnosis.node.id confidence ] )
+
+                                                        Err _ ->
+                                                            ( True, [] )
+                                            in
+                                            [ form formAttributes
+                                                [ displayNamedNode userUrl currentUser
+                                                , text " estimated "
+                                                , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue newWager, FormField.onInput changeWager newWager ] []
+                                                , text "%"
+                                                , div []
+                                                    [ button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
+                                                    , cancelEditButton
+                                                    ]
+                                                ]
+                                            ]
+                                                |> li []
+                                                |> List.singleton
+
+                                        else
+                                            []
+
+                                    _ ->
+                                        []
+                       )
+            ]
+
         displayNewDiagnosis : List (Html msg)
         displayNewDiagnosis =
-            [ text "here is a new dx" ]
+            case state of
+                Viewing ->
+                    [ button
+                        [ type_ "button", onClick <| changeState <| AddingDiagnosis (FormField.newNonEmptyStringField "Diagnosis") (FormField.newField FormField.validateConfidence) ]
+                        [ text "Add diagnosis" ]
+                    ]
+                        |> h4 []
+                        |> List.singleton
+                        |> li []
+                        |> List.singleton
 
-        --case state of
-        --    Viewing ->
-        --        [ button
-        --            [ type_ "button", onClick <| changeCase { caseDetail | state = AddingDiagnosis blankPrediction } ]
-        --            [ text "Add diagnosis" ]
-        --        ]
-        --            |> h4 []
-        --            |> List.singleton
-        --            |> li []
-        --            |> List.singleton
-        --
-        --    AddingDiagnosis prediction ->
-        --        let
-        --            changePrediction newPrediction =
-        --                changeCase { caseDetail | state = AddingDiagnosis newPrediction }
-        --
-        --            changeDiagnosis diagnosis =
-        --                changePrediction { prediction | diagnosis = diagnosis }
-        --
-        --            changeConfidence confidence =
-        --                changePrediction { prediction | confidence = confidence }
-        --
-        --            ( submitButtonDisabled, formAttributes ) =
-        --                case ( FormField.getValue prediction.diagnosis, FormField.getValue prediction.confidence ) of
-        --                    ( Ok diagnosis, Ok confidence ) ->
-        --                        ( False, [ onSubmit <| SubmitDiagnosis caseDetail user.node.id <| PredictionInput diagnosis confidence Absent ] )
-        --
-        --                    _ ->
-        --                        ( True, [] )
-        --        in
-        --        [ form formAttributes
-        --            [ h4 [] [ input [ type_ "text", placeholder "Diagnosis", FormField.withValue prediction.diagnosis, FormField.onInput changeDiagnosis prediction.diagnosis ] [] ]
-        --            , ul []
-        --                [ li []
-        --                    [ displayNamedNodeLink "/user" user.node
-        --                    , text " estimated "
-        --                    , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue prediction.confidence, FormField.onInput changeConfidence prediction.confidence ] []
-        --                    , text "%"
-        --                    ]
-        --                ]
-        --            , button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
-        --            , cancelEditButton caseDetail
-        --            ]
-        --        ]
-        --            |> li []
-        --            |> List.singleton
-        --
-        --    _ ->
-        --        []
+                AddingDiagnosis diagnosis confidence ->
+                    let
+                        changeDiagnosis newDiagnosis =
+                            changeState <| AddingDiagnosis newDiagnosis confidence
+
+                        changeConfidence newConfidence =
+                            changeState <| AddingDiagnosis diagnosis newConfidence
+
+                        ( submitButtonDisabled, formAttributes ) =
+                            case ( FormField.getValue diagnosis, FormField.getValue confidence ) of
+                                ( Ok d, Ok c ) ->
+                                    ( False, [ onSubmit <| submitDiagnosisMsg (Data state case_) d c ] )
+
+                                _ ->
+                                    ( True, [] )
+                    in
+                    [ form formAttributes
+                        [ h4 [] [ input [ type_ "text", placeholder "Diagnosis", FormField.withValue diagnosis, FormField.onInput changeDiagnosis diagnosis ] [] ]
+                        , ul []
+                            [ li []
+                                [ displayNamedNode userUrl currentUser
+                                , text " estimated "
+                                , input [ type_ "number", step "1", Html.Attributes.min "0", Html.Attributes.max "100", FormField.withValue confidence, FormField.onInput changeConfidence confidence ] []
+                                , text "%"
+                                ]
+                            ]
+                        , button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
+                        , cancelEditButton
+                        ]
+                    ]
+                        |> li []
+                        |> List.singleton
+
+                _ ->
+                    []
+
         displayComment : Comment -> List (Html msg)
         displayComment comment =
             [ displayNamedNode userUrl comment.creator
@@ -386,12 +397,12 @@ view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg addCommentMsg n
         displayNewComment : List (Html msg)
         displayNewComment =
             let
-                changeComment : Field String -> msg
+                changeComment : FormField.Field String -> msg
                 changeComment comment =
-                    changeState <| AddingComment comment Nothing
+                    changeState <| AddingComment comment
             in
             case state of
-                AddingComment newComment error ->
+                AddingComment newComment ->
                     let
                         ( submitButtonDisabled, formAttributes ) =
                             case FormField.getValue newComment of
@@ -404,17 +415,15 @@ view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg addCommentMsg n
                                     ( True, [] )
                     in
                     [ li []
-                        ([ displayNamedNode userUrl currentUser
-                         , blockquote []
+                        [ displayNamedNode userUrl currentUser
+                        , blockquote []
                             [ form formAttributes
                                 [ input [ type_ "text", placeholder "Enter comment", FormField.withValue newComment, FormField.onInput changeComment newComment ] []
                                 , button [ type_ "submit", disabled submitButtonDisabled ] [ text "Submit" ]
                                 , cancelEditButton
                                 ]
                             ]
-                         ]
-                            ++ Maybe.withDefault [] (Maybe.map (Error.graphqlHttpErrorToHtml >> List.singleton >> div [] >> List.singleton) error)
-                        )
+                        ]
                     ]
 
                 Viewing ->
@@ -445,6 +454,38 @@ view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg addCommentMsg n
         ]
 
 
+onResult : (a -> Case -> Data) -> Data -> Result (Graphql.Http.Error ()) a -> Data
+onResult updateCase (Data _ case_) result =
+    case result of
+        Ok a ->
+            case_ |> updateCase a
+
+        Err _ ->
+            Data Viewing case_
+
+
+onDiagnosisRelatedResult : (a -> Diagnosis -> Diagnosis) -> Id -> Data -> Result (Graphql.Http.Error ()) a -> Data
+onDiagnosisRelatedResult updateFn diagnosisId (Data _ case_) result =
+    Data Viewing <|
+        case result of
+            Ok a ->
+                { case_
+                    | diagnoses =
+                        List.map
+                            (\d ->
+                                if d.node.id == diagnosisId then
+                                    updateFn a d
+
+                                else
+                                    d
+                            )
+                            case_.diagnoses
+                }
+
+            Err _ ->
+                case_
+
+
 fetchGroups : Id -> Graphql.Http.Request (List NamedNodeData)
 fetchGroups userId =
     SelectionSet.map2 NamedNodeData Predictions.Object.Group.id Predictions.Object.Group.name
@@ -453,14 +494,9 @@ fetchGroups userId =
         |> Graphql.Http.queryRequest api
 
 
-onGroupsResult : Data -> Result (Graphql.Http.Error ()) (List NamedNodeData) -> Data
-onGroupsResult (Data _ case_) result =
-    case result of
-        Ok groups ->
-            Data (ChangingGroup groups) case_
-
-        Err _ ->
-            Data Viewing case_
+onFetchGroupsResult : Data -> Result (Graphql.Http.Error ()) (List NamedNodeData) -> Data
+onFetchGroupsResult =
+    onResult (\groups case_ -> Data (ChangingGroup groups) case_)
 
 
 changeGroup : Data -> Maybe Id -> Graphql.Http.Request (Maybe NamedNodeData)
@@ -473,47 +509,8 @@ changeGroup (Data _ case_) id =
 
 
 onChangeGroupResult : Data -> Result (Graphql.Http.Error ()) (Maybe NamedNodeData) -> Data
-onChangeGroupResult (Data _ case_) result =
-    Data Viewing <|
-        case result of
-            Ok group ->
-                { case_ | group = group }
-
-            Err _ ->
-                case_
-
-
-newCommentInput : Field String
-newCommentInput =
-    FormField.newNonEmptyStringField "Comment"
-
-
-addComment : Data -> String -> Graphql.Http.Request Comment
-addComment (Data _ case_) text =
-    Predictions.Mutation.addComment { caseId = case_.node.id, text = text } mapToComment
-        |> Graphql.Http.mutationRequest api
-
-
-onCommentResult : Data -> Result (Graphql.Http.Error ()) Comment -> Data
-onCommentResult (Data state case_) result =
-    case result of
-        Ok comment ->
-            Data Viewing { case_ | comments = case_.comments ++ [ comment ] }
-
-        Err error ->
-            Data
-                (AddingComment
-                    (case state of
-                        AddingComment input _ ->
-                            input
-
-                        _ ->
-                            newCommentInput
-                    )
-                 <|
-                    Just error
-                )
-                case_
+onChangeGroupResult =
+    onResult (\group case_ -> Data Viewing { case_ | group = group })
 
 
 changeDeadline : Data -> Timestamp -> Graphql.Http.Request Timestamp
@@ -522,23 +519,71 @@ changeDeadline (Data _ case_) deadline =
         |> Graphql.Http.mutationRequest api
 
 
-onDeadlineResult : Data -> Result (Graphql.Http.Error ()) Timestamp -> Data
-onDeadlineResult (Data state case_) result =
-    case result of
-        Ok deadline ->
-            Data Viewing { case_ | deadline = deadline }
+onChangeDeadlineResult : Data -> Result (Graphql.Http.Error ()) Timestamp -> Data
+onChangeDeadlineResult =
+    onResult (\deadline case_ -> Data Viewing { case_ | deadline = deadline })
 
-        Err error ->
-            Data
-                (AddingComment
-                    (case state of
-                        AddingComment input _ ->
-                            input
 
-                        _ ->
-                            newCommentInput
-                    )
-                 <|
-                    Just error
-                )
-                case_
+submitDiagnosis : Data -> String -> Int -> Graphql.Http.Request Diagnosis
+submitDiagnosis (Data _ case_) diagnosis confidence =
+    Predictions.Mutation.addDiagnosis
+        { caseId = case_.node.id
+        , prediction =
+            { diagnosis = diagnosis
+            , confidence = confidence
+            , outcome = Absent
+            }
+        }
+        mapToDiagnosis
+        |> Graphql.Http.mutationRequest api
+
+
+onSubmitDiagnosisResult : Data -> Result (Graphql.Http.Error ()) Diagnosis -> Data
+onSubmitDiagnosisResult =
+    onResult (\diagnosis case_ -> Data Viewing { case_ | diagnoses = case_.diagnoses ++ [ diagnosis ] })
+
+
+submitWager : Id -> Int -> Graphql.Http.Request Wager
+submitWager diagnosisId confidence =
+    Predictions.Mutation.addWager
+        { diagnosisId = diagnosisId
+        , confidence = confidence
+        }
+        mapToWager
+        |> Graphql.Http.mutationRequest api
+
+
+onSubmitWagerResult : Id -> Data -> Result (Graphql.Http.Error ()) Wager -> Data
+onSubmitWagerResult =
+    onDiagnosisRelatedResult (\wager diagnosis -> { diagnosis | wagers = diagnosis.wagers ++ [ wager ] })
+
+
+judgeOutcome : Id -> Outcome -> Graphql.Http.Request Judgement
+judgeOutcome diagnosisId outcome =
+    Predictions.Mutation.judgeOutcome
+        { diagnosisId = diagnosisId
+        , outcome = outcome
+        }
+        mapToJudgement
+        |> Graphql.Http.mutationRequest api
+
+
+onJudgeOutcomeResult : Id -> Data -> Result (Graphql.Http.Error ()) Judgement -> Data
+onJudgeOutcomeResult =
+    onDiagnosisRelatedResult (\judgement diagnosis -> { diagnosis | judgement = Just judgement })
+
+
+addComment : Data -> String -> Graphql.Http.Request Comment
+addComment (Data _ case_) text =
+    Predictions.Mutation.addComment { caseId = case_.node.id, text = text } mapToComment
+        |> Graphql.Http.mutationRequest api
+
+
+onAddCommentResult : Data -> Result (Graphql.Http.Error ()) Comment -> Data
+onAddCommentResult =
+    onResult (\comment case_ -> Data Viewing { case_ | comments = case_.comments ++ [ comment ] })
+
+
+newCommentInput : FormField.Field String
+newCommentInput =
+    FormField.newNonEmptyStringField "Comment"
