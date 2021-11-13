@@ -1,7 +1,7 @@
 module CaseDetail exposing (Data, addComment, changeDeadline, changeGroup, fetchGroups, judgeOutcome, onAddCommentResult, onChangeDeadlineResult, onChangeGroupResult, onFetchGroupsResult, onJudgeOutcomeResult, onSubmitDiagnosisResult, onSubmitWagerResult, queryRequest, submitDiagnosis, submitWager, view)
 
 import Common exposing (NamedNodeData, Now, caseUrl, displayListItems, displayNamedNode, displayOutcome, displayTime, groupUrl, userUrl)
-import Config exposing (api)
+import Config exposing (api, privateGroupName)
 import FormField
 import Graphql.Http
 import Graphql.OptionalArgument exposing (OptionalArgument(..))
@@ -185,9 +185,6 @@ view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg submitDiagnosis
                 _ ->
                     viewDeadline
 
-        privateGroupName =
-            "(Private)"
-
         viewGroup =
             case_.group |> Maybe.map (displayNamedNode groupUrl) |> Maybe.withDefault (text privateGroupName)
 
@@ -211,9 +208,10 @@ view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg submitDiagnosis
                         mapToOption group =
                             case group.id of
                                 Id groupId ->
-                                    let
-                                        s =
-                                            case case_.group of
+                                    option
+                                        [ value groupId
+                                        , selected
+                                            (case case_.group of
                                                 Just g ->
                                                     case g.id of
                                                         Id id ->
@@ -221,8 +219,9 @@ view dataUpdated fetchGroupsMsg changeGroupMsg changeDeadlineMsg submitDiagnosis
 
                                                 Nothing ->
                                                     False
-                                    in
-                                    option [ value groupId, selected s ] [ text group.name ]
+                                            )
+                                        ]
+                                        [ text group.name ]
                     in
                     div []
                         [ select [ onInput onChangeGroup ] <| option [ value private, selected (case_.group == Nothing) ] [ text privateGroupName ] :: List.map mapToOption groups
@@ -531,7 +530,6 @@ submitDiagnosis (Data _ case_) diagnosis confidence =
         , prediction =
             { diagnosis = diagnosis
             , confidence = confidence
-            , outcome = Absent
             }
         }
         mapToDiagnosis

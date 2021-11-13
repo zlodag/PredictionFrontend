@@ -1,10 +1,10 @@
-module Main exposing (main)
+port module Main exposing (main)
 
 import Browser exposing (Document)
 import Browser.Navigation as Nav
 import CaseDetail
 import CaseList
-import Common exposing (NamedNodeData, Now, UserInfo, displayNamedNode, groupUrl, userUrl)
+import Common exposing (HtmlRemoteData, NamedNodeData, Now, UserInfo, displayNamedNode, groupUrl, userUrl)
 import Config exposing (api)
 import Error
 import Graphql.Http
@@ -13,7 +13,7 @@ import Html exposing (Html, a, button, dd, div, dl, dt, hr, li, text, ul)
 import Html.Attributes exposing (href, type_)
 import Html.Events exposing (onClick)
 import Http exposing (Error(..), Resolver)
-import Import
+import Import exposing (DecryptionMessage)
 import Json.Decode as D
 import Json.Encode as E
 import Login exposing (Credentials, blankCredentials, viewSignInForm)
@@ -45,14 +45,20 @@ main =
         }
 
 
+port decrypt : DecryptionMessage -> Cmd msg
+
+
+port decryptReceiver : (D.Value -> msg) -> Sub msg
+
+
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
 init _ url key =
     parseUrlAndRequest url <| Model key (Now Time.utc <| Time.millisToPosix 0) (LoggedOut Nothing blankCredentials)
 
 
-subscriptions : Model -> Sub msg
+subscriptions : Model -> Sub Msg
 subscriptions _ =
-    Sub.none
+    decryptReceiver DecryptedReferences
 
 
 type alias Model =
@@ -78,11 +84,7 @@ type Data
     | CaseDetail (HtmlRemoteData CaseDetail.Data)
     | UserDetail (HtmlRemoteData NamedNodeData)
     | UserScore (HtmlRemoteData UserScore.Data)
-    | ImportPredictions
-
-
-type alias HtmlRemoteData a =
-    RemoteData (Graphql.Http.Error ()) a
+    | ImportPredictions (HtmlRemoteData Import.Data)
 
 
 type alias GroupListData =
@@ -113,6 +115,10 @@ type Msg
     | SubmitWager UserInfo CaseDetail.Data Id Int
     | JudgeOutcome UserInfo CaseDetail.Data Id Outcome
     | AddComment UserInfo CaseDetail.Data String
+    | RetrieveRemoteCases UserInfo Import.Data
+    | GotFromApi UserInfo Import.Data
+    | DecryptedReferences D.Value
+    | SubmitImportedCases UserInfo Import.Data (Graphql.Http.Request Int)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -255,6 +261,25 @@ update msg model =
             CaseDetail.addComment data comment
                 |> caseDetailHelper userInfo data CaseDetail.onAddCommentResult
 
+        RetrieveRemoteCases userInfo data ->
+            ( model, Import.queryRequest (GotFromApi userInfo) data )
+
+        GotFromApi userInfo data ->
+            ( { model | auth = Success data |> ImportPredictions |> LoggedIn userInfo }, data |> Import.toDecryptionCmd decrypt )
+
+        DecryptedReferences value ->
+            ( case model.auth of
+                LoggedIn userInfo (ImportPredictions (Success data)) ->
+                    { model | auth = data |> Import.updateWithDecrypted value |> Success |> ImportPredictions |> LoggedIn userInfo }
+
+                _ ->
+                    model
+            , Cmd.none
+            )
+
+        SubmitImportedCases userInfo data request ->
+            request |> sendDataRequest model userInfo (Import.onSubmitCasesResult data >> Success >> ImportPredictions)
+
 
 type Route
     = Home
@@ -329,7 +354,8 @@ parseUrlAndRequest url model =
                 |> sendDataRequest model userData UserScore
 
         ( LoggedIn userData _, Just ImportRoute ) ->
-            ( { model | auth = LoggedIn userData ImportPredictions }, Cmd.none )
+            Import.fetchGroups userData.node.id
+                |> sendDataRequest model userData (RemoteData.map Import.initialData >> ImportPredictions)
 
         _ ->
             ( model, Nav.pushUrl model.key "/" )
@@ -445,8 +471,13 @@ displayData now userInfo remoteData =
         UserScore data ->
             UserScore.view (Success >> UserScore >> DataUpdated userInfo) now |> displayRemoteData data
 
-        ImportPredictions ->
+        ImportPredictions data ->
             Import.view
+                (RetrieveRemoteCases userInfo)
+                (Success >> ImportPredictions >> DataUpdated userInfo)
+                (SubmitImportedCases userInfo)
+                now
+                |> displayRemoteData data
 
 
 displayRemoteData : HtmlRemoteData a -> (a -> Html Msg) -> Html Msg

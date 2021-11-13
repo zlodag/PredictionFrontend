@@ -1,9 +1,11 @@
 module Common exposing (..)
 
+import Graphql.Http
 import Html exposing (Html, a, li, span, text)
 import Html.Attributes exposing (href, title)
 import Predictions.Enum.Outcome exposing (Outcome(..))
 import Predictions.Scalar exposing (Id(..))
+import RemoteData exposing (RemoteData)
 import Time exposing (Month(..), Weekday(..))
 import Time.Distance
 import Url.Builder
@@ -26,6 +28,10 @@ type alias UserInfo =
     , accessToken : String
     , refreshToken : String
     }
+
+
+type alias HtmlRemoteData a =
+    RemoteData (Graphql.Http.Error ()) a
 
 
 displayNamedNode : (Id -> String) -> NamedNodeData -> Html msg
