@@ -7,7 +7,7 @@ import Chart.Item as CI
 import Common exposing (NamedNodeData, Now, UserInfo, caseUrl, displayNamedNode, displayOutcomeSymbol, displayTime, getShortDateString)
 import Config exposing (api)
 import Graphql.Http
-import Graphql.SelectionSet as SelectionSet
+import Graphql.SelectionSet as SelectionSet exposing (with)
 import Html exposing (Html, div, table, tbody, td, text, th, thead, tr)
 import Html.Attributes exposing (style)
 import Predictions.Enum.Outcome exposing (Outcome(..))
@@ -30,7 +30,8 @@ type alias Hovering =
 
 
 type alias Score =
-    { judged : Timestamp
+    { wagered : Timestamp
+    , judged : Timestamp
     , case_ : NamedNodeData
     , diagnosis : String
     , confidence : Int
@@ -43,15 +44,16 @@ type alias Score =
 
 queryRequest : Id -> Graphql.Http.Request Data
 queryRequest userId =
-    SelectionSet.map8 Score
-        Predictions.Object.Score.judged
-        (SelectionSet.map2 NamedNodeData Predictions.Object.Score.caseId Predictions.Object.Score.reference)
-        Predictions.Object.Score.diagnosis
-        Predictions.Object.Score.confidence
-        Predictions.Object.Score.outcome
-        Predictions.Object.Score.brierScore
-        Predictions.Object.Score.averageBrierScore
-        Predictions.Object.Score.adjustedBrierScore
+    SelectionSet.succeed Score
+        |> with Predictions.Object.Score.wagered
+        |> with Predictions.Object.Score.judged
+        |> with (SelectionSet.map2 NamedNodeData Predictions.Object.Score.caseId Predictions.Object.Score.reference)
+        |> with Predictions.Object.Score.diagnosis
+        |> with Predictions.Object.Score.confidence
+        |> with Predictions.Object.Score.outcome
+        |> with Predictions.Object.Score.brierScore
+        |> with Predictions.Object.Score.averageBrierScore
+        |> with Predictions.Object.Score.adjustedBrierScore
         |> Predictions.Object.User.scores
         |> SelectionSet.map (Data [])
         |> Predictions.Query.user { id = userId }
@@ -71,7 +73,8 @@ view dataUpdated now (Data hovering scores) =
         , table []
             [ thead []
                 [ tr []
-                    [ th [] [ text "Judged" ]
+                    [ th [] [ text "Wagered" ]
+                    , th [] [ text "Judged" ]
                     , th [] [ text "Case" ]
                     , th [] [ text "Diagnosis" ]
                     , th [] [ text "Confidence" ]
@@ -89,7 +92,8 @@ view dataUpdated now (Data hovering scores) =
 displayScore : Now -> Score -> Html msg
 displayScore now score =
     tr []
-        [ td [] [ displayTime now score.judged ]
+        [ td [] [ displayTime now score.wagered ]
+        , td [] [ displayTime now score.judged ]
         , td [] [ displayNamedNode caseUrl score.case_ ]
         , td [] [ text score.diagnosis ]
         , td [] [ text <| String.fromInt score.confidence ++ "%" ]
@@ -121,7 +125,7 @@ displayChart zone onHover hovering scores =
             , CA.fontSize 12
             ]
         , C.yLabels [ CA.fontSize 12 ]
-        , C.series (.judged >> Time.posixToMillis >> toFloat)
+        , C.series (.wagered >> Time.posixToMillis >> toFloat)
             [ C.scatter .brierScore [] |> C.named "Brier score"
             , C.interpolated .averageBrierScore [ CA.stepped ] [] |> C.named "average score"
 
